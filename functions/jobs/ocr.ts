@@ -1,5 +1,7 @@
+
 import { Env, store, json, bad, isMock } from "../_utils";
 import { realUpsertMenuItem } from "../_real/store";
+import { runRealOcr } from "../../_real/ocr";
 
 export const onRequestPost: PagesFunction<Env> = async ({ env, request }) => {
   const body = await request.json().catch(()=> ({} as any));
@@ -67,3 +69,32 @@ export const onRequestPost: PagesFunction<Env> = async ({ env, request }) => {
   }
   return json({ job_id, status: job.status });
 };
+
+/**
+ * S68-02: real OCR wiring (Vision etc.)
+ * enable with env.USE_REAL_OCR="on"
+ * expects input: { store_id, image_url }
+ */
+async function maybeRunRealOcrAndSeed(env: any, store_id: string, image_url: string) {
+  if ((env.USE_REAL_OCR || "off") !== "on") return null;
+
+  const ocr = await runRealOcr(image_url, env);
+  const text = ocr.text || "";
+
+  // 超シンプル候補抽出（あとで精緻化）
+  // 例: "串焼き 180" / "ねぎま 220" みたいな行を拾う
+  const lines = text.split("\n").map(s => s.trim()).filter(Boolean);
+  const candidates = lines.map((line) => {
+    const m = line.match(/^(.*?)[\s　]+([0-9]{2,5})$/);
+    if (!m) return { name: line, price: null, raw: line };
+    return { name: m[1].trim(), price: Number(m[2]), raw: line };
+  });
+
+  // 既存seed関数がある想定（無ければstub側で従来通りseed）
+  if (typeof (globalThis as any).realSeedCandidates === "function") {
+    await (globalThis as any).realSeedCandidates(env, store_id, candidates);
+    return { candidates, mode: "real-ocr" };
+  }
+
+  return { candidates, mode: "real-ocr-no-seed-fn" };
+}
