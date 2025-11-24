@@ -46,6 +46,22 @@ export const onRequestPost: PagesFunction<Env> = async ({ env, request }) => {
   }
 
   // real: candidatesをKVへseed（次で本物OCRに置換）
+  // input があれば adapter で candidates を上書き
+  try {
+    const body = await request.json().catch(()=>null) as any;
+    const hasInput = body?.image_urls?.length || body?.pdf_url;
+    if (hasInput) {
+      const { realOcrExtract } = await import("../_real/ocr");
+      job.candidates = await realOcrExtract(env, {
+        store_id,
+        image_urls: body.image_urls,
+        pdf_url: body.pdf_url
+      });
+    }
+  } catch (e) {
+    // ignore input parse errors
+  }
+
   for (const c of job.candidates) {
     await realUpsertMenuItem(env, store_id, c);
   }
