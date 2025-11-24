@@ -1,9 +1,11 @@
+name = "tonosama-system"
+compatibility_date = "2025-11-24"
+pages_build_output_dir = "public"
 
-# --- CP4 real bindings ---
 [[kv_namespaces]]
 binding = "MENU_KV"
-id = "PASTE_MENU_KV_ID_HERE"
+id = "2332ad2b3c924ac793e35edda054ed35"
 
 [[kv_namespaces]]
 binding = "PAYMENT_KV"
-id = "PASTE_PAYMENT_KV_ID_HERE"
+id = "201ac27863a24d72a5e81cfdb644f9e1"
