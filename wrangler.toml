@@ -1,0 +1,9 @@
+
+# --- CP4 real bindings ---
+[[kv_namespaces]]
+binding = "MENU_KV"
+id = "PASTE_MENU_KV_ID_HERE"
+
+[[kv_namespaces]]
+binding = "PAYMENT_KV"
+id = "PASTE_PAYMENT_KV_ID_HERE"
