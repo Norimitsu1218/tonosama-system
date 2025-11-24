@@ -1,36 +1,21 @@
 import { Env, isMock, store, json, bad } from "../../_utils";
 
-export const onRequestGet: PagesFunction<Env> = async ({ params, env }) => {
-  const job_id = params.job_id as string;
+export const onRequestGet: PagesFunction<Env> = async ({ env, params }) => {
+  const job_id = String(params.job_id || "");
   const job = store.jobs.get(job_id);
-  if (!job) return bad("job not found", 404, "not_found");
+  if (!job) return bad(404, "JOB_NOT_FOUND", "job not found");
 
-  if (isMock(env)) {
-    if (job.status === "running") {
-      job.progress = Math.min(100, job.progress + 18);
-      if (job.progress > 10) job.steps[0].done = true;
-      if (job.progress > 45) job.steps[1].done = true;
-      if (job.progress >= 100) {
-        job.steps[2].done = true;
-        job.status = "succeeded";
-        job.candidates = [
-          {
-            item_id: "draft_001",
-            name_ja: "ねぎま",
-            price: 220,
-            category: "焼き鳥",
-            image_status: "none",
-            ja18s_draft: "香ばしい鶏ももと長ねぎを…（18秒文）",
-            status: "needs_review",
-            qc_status: "needs_review",
-            qc_reason: "価格/部位の要確認"
-          }
-        ];
-      }
-      store.jobs.set(job_id, job);
+  if (isMock(env) && job.status === "running") {
+    job.progress = Math.min(100, (job.progress || 0) + 25);
+    if (job.progress >= 100) {
+      job.status = "succeeded";
+      job.steps.forEach((s:any)=>s.done=true);
+    } else {
+      const idx = Math.floor(job.progress/34);
+      job.steps.forEach((s:any,i:number)=>s.done=i<idx);
     }
-    return json({ ...job, candidates: job.candidates || [] });
+    store.jobs.set(job_id, job);
   }
 
-  return json({ ...job, candidates: job.candidates || [] });
+  return json(job);
 };
