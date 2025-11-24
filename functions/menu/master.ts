@@ -1,14 +1,13 @@
 import { Env, store, json, isMock } from "../_utils";
+import { realGetMenu } from "../_real/store";
 
 export const onRequestGet: PagesFunction<Env> = async ({ env, request }) => {
   const url = new URL(request.url);
   const store_id = url.searchParams.get("store_id") || "store_dev_0001";
 
-  store.menu = store.menu || [];
-
+  // mock: stateless-safe seed
   if (isMock(env)) {
-    // Pages Functions are stateless between requests, so seed on-demand
-    if (store.menu.length === 0) {
+    if (!store.menu.some((x:any)=>x.store_id===store_id)) {
       store.menu.push({
         store_id,
         item_id: "draft_001",
@@ -25,8 +24,11 @@ export const onRequestGet: PagesFunction<Env> = async ({ env, request }) => {
         translation_status: "idle"
       });
     }
+    const items = store.menu.filter((x:any)=>x.store_id===store_id);
+    return json({ store_id, items });
   }
 
-  const items = store.menu.filter((x:any)=>x.store_id===store_id);
+  // real: read from MENU_KV
+  const items = await realGetMenu(env, store_id);
   return json({ store_id, items });
 };
