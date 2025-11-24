@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>メニューアップロード（店主） | TONOSAMA</title>
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#0b1220;color:#e5e7eb;margin:0}
+    .wrap{max-width:980px;margin:0 auto;padding:20px}
+    .card{background:#0f172a;border:1px solid #1f2937;border-radius:16px;padding:16px;margin:12px 0;box-shadow:0 6px 16px rgba(0,0,0,.25)}
+    h1{font-size:20px;margin:8px 0 12px}
+    .row{display:flex;gap:12px;flex-wrap:wrap}
+    .btn{background:#10b981;color:#04110c;border:0;border-radius:12px;padding:10px 14px;font-weight:700;cursor:pointer}
+    .btn.secondary{background:#334155;color:#e2e8f0}
+    .btn:disabled{opacity:.4;cursor:not-allowed}
+    .muted{opacity:.7;font-size:13px}
+    .badge{display:inline-block;padding:4px 8px;border-radius:999px;font-size:12px;font-weight:800;letter-spacing:.02em}
+    .badge.running{background:#2563eb;color:#e0e7ff}
+    .badge.done{background:#10b981;color:#052e1d}
+    .badge.failed{background:#e11d48;color:#ffe4e6}
+    .badge.trial{background:#0ea5e9;color:#e0f2fe}
+    .badge.paid{background:#10b981;color:#ecfdf5}
+    .badge.overdue{background:#f59e0b;color:#fff7ed}
+    .badge.blocked{background:#ef4444;color:#fff1f2}
+    .list{display:grid;grid-template-columns:1fr;gap:8px}
+    .item{padding:10px;border:1px dashed #334155;border-radius:12px;background:#0b1020}
+    #loading{display:none;position:fixed;inset:0;background:rgba(2,6,23,.7);align-items:center;justify-content:center;z-index:9998}
+    #loading .inner{background:#0f172a;border:1px solid #1f2937;border-radius:16px;padding:18px 22px}
+  </style>
+</head>
+<body>
+<div id="loading"><div class="inner"><div class="label">処理中…</div></div></div>
+
+<div class="wrap">
+  <h1>メニューアップロード（店主）</h1>
+
+  <div class="card">
+    <div class="row" style="align-items:center;justify-content:space-between">
+      <div>
+        <div class="muted">支払い状態</div>
+        <div id="paymentBadge"></div>
+      </div>
+      <div class="muted">Phase 2–5 / P0</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="muted">① ファイルアップロード（Excel/PDF/画像）</div>
+    <input id="fileInput" type="file" multiple accept=".xlsx,.xls,.pdf,image/*"/>
+    <div class="row" style="margin-top:10px">
+      <button id="btnUpload" class="btn">アップロード → 解析開始</button>
+      <button id="btnReset" class="btn secondary">リセット</button>
+    </div>
+    <div class="muted" style="margin-top:6px">※20MB以内 / 拡張子チェックあり</div>
+  </div>
+
+  <div class="card">
+    <div class="muted">② 解析進捗</div>
+    <div class="row" style="margin-top:6px;align-items:center;justify-content:space-between">
+      <div id="jobBadge"></div>
+      <div id="progressText" class="muted"></div>
+    </div>
+    <div id="steps" class="muted" style="margin-top:6px"></div>
+  </div>
+
+  <div class="card">
+    <div class="muted">③ 候補一覧（draft）</div>
+    <div id="candidates" class="list" style="margin-top:8px"></div>
+  </div>
+
+  <div class="card">
+    <div class="muted">④ 次工程へ</div>
+    <button id="btnNext" class="btn" disabled>候補確認（店主用実務）へ進む</button>
+  </div>
+</div>
+
+<script type="module" src="/assets/js/menu-upload.js"></script>
+</body>
+</html>
