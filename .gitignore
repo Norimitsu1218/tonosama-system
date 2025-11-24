@@ -1,0 +1,4 @@
+
+# ignore rescued broken GAS artifacts
+TRS_*.gs
+../TRS_*.gs
