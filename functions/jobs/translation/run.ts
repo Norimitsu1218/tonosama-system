@@ -1,5 +1,5 @@
-import { Env, json, isMock, bad } from "../_utils";
-import { realGetMenu, realUpsertMenuItem } from "../_real/store";
+import { Env, json, isMock, bad } from "../../_utils";
+import { realGetMenu, realUpsertMenuItem } from "../../_real/store";
 
 // Free用：queued を同期で一括処理（今はスタブで done にする）
 export const onRequestPost: PagesFunction<Env> = async ({ env, request }) => {
