@@ -9,13 +9,3 @@ id = "2332ad2b3c924ac793e35edda054ed35"
 [[kv_namespaces]]
 binding = "PAYMENT_KV"
 id = "201ac27863a24d72a5e81cfdb644f9e1"
-
-[[queues.producers]]
-queue = "translation-jobs"
-binding = "TRANSLATION_Q"
-
-[[queues.consumers]]
-queue = "translation-jobs"
-max_batch_size = 10
-max_batch_timeout = 30
-dead_letter_queue = "translation-jobs-dlq"
