@@ -11,11 +11,11 @@ export const onRequestGet: PagesFunction<Env> = async ({ env, params }) => {
       job.status = "succeeded";
       job.steps.forEach((s:any)=>s.done=true);
     } else {
-      const idx = Math.floor(job.progress/34);
+      const idx = Math.floor((job.progress||0)/34);
       job.steps.forEach((s:any,i:number)=>s.done=i<idx);
     }
     store.jobs.set(job_id, job);
   }
 
-  return json(job);
+  return json({ ...job, candidates: job.candidates || [] });
 };
