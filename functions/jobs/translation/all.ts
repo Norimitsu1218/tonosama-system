@@ -30,5 +30,5 @@ export const onRequestPost: PagesFunction = async (ctx) => {
     }
   }
 
-  return Response.json({ status: "queued", count: queued, batch_id, chunks: chunks.length });
+  return Response.json({ debug, { status: "queued", count: queued, batch_id, chunks: chunks.length });
 };
