@@ -1,44 +1,22 @@
-/**
- * CP4-QC-AUTO: Automated QC for localized outputs.
- * - Accepts { name_localized, body_localized }
- * - Throws on NG so caller can mark translation_status=error
- */
+// CP4-QC-AUTO: lightweight QC rules (per lang)
+// Throw on NG; caller handles try/catch and marks translation_status:error.
 
-import { QC_RULES, Lang } from "./prompt-registry";
+const forbid = [
+  "raw translation", "literally", "not sure", "unknown",
+];
 
-const LANGUAGE_RULES: Partial<Record<Lang, { forbid?: RegExp[]; mustMention?: string[] }>> = {
-  en: { forbid: [/cure/i], mustMention: ["yakitori"] },
-  ko: { mustMention: ["yakitori"] },
-  "zh-Hans": { mustMention: ["yakitori"] },
-};
+const mustMention = [
+  "texture", "taste",
+];
 
-export type LocalizedOut = {
-  lang: Lang;
-  name_localized: string;
-  body_localized: string;
-  price?: number | string;
-};
+export function qcCheckOne(lang: string, text: string) {
+  const low = text.toLowerCase();
 
-export async function qcCheckOne(env: any, out: LocalizedOut) {
-  const body = String(out.body_localized || "");
-  const name = String(out.name_localized || "");
-
-  const langRules = LANGUAGE_RULES[out.lang] || {};
-  const forbidList = [...(QC_RULES.forbid || []), ...(langRules.forbid || [])];
-  const mustList = [...(QC_RULES.mustMention || []), ...(langRules.mustMention || [])];
-
-  // forbid patterns
-  const forbidHit = forbidList.find((r) => r.test(body) || r.test(name));
-
-  // mustMention keywords (simple baseline)
-  const mustMiss = mustList.find((k) => !body.toLowerCase().includes(String(k).toLowerCase()));
-
-  if (forbidHit || mustMiss) {
-    const reason = forbidHit
-      ? `forbid:${String(forbidHit)}`
-      : `mustMention:${String(mustMiss)}`;
-    throw new Error(`QC NG: ${reason}`);
+  for (const f of forbid) {
+    if (low.includes(f)) throw new Error(`QC_FORBID:${f}`);
   }
-
-  return { status: "ok", reason: null };
+  for (const m of mustMention) {
+    if (!low.includes(m)) throw new Error(`QC_MISSING:${m}`);
+  }
+  return true;
 }
