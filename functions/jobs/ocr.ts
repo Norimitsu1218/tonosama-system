@@ -1,7 +1,7 @@
 
 import { Env, store, json, bad, isMock } from "../_utils";
 import { realUpsertMenuItem } from "../_real/store";
-import { runRealOcr } from "../../_real/ocr";
+import { runRealOcr } from "../_real/ocr";
 
 export const onRequestPost: PagesFunction<Env> = async ({ env, request }) => {
   const body = await request.json().catch(()=> ({} as any));
