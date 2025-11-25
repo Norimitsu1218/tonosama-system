@@ -1,34 +1,22 @@
-import { Env, store, json, isMock } from "../_utils";
-import { realGetMenu } from "../_real/store";
+// CP3-TRUTH: master read with non-destructive normalize
+import { realGetMenu } from "../_real/menu";
+import { canonicalDefaults } from "../lib/merge-upsert";
 
-export const onRequestGet: PagesFunction<Env> = async ({ env, request }) => {
+export async function onRequestGet({ request, env }: any) {
   const url = new URL(request.url);
-  const store_id = url.searchParams.get("store_id") || "store_dev_0001";
+  const store_id = url.searchParams.get("store_id");
+  if (!store_id) return new Response("store_id required", { status: 400 });
 
-  // mock: stateless-safe seed
-  if (isMock(env)) {
-    if (!store.menu.some((x:any)=>x.store_id===store_id)) {
-      store.menu.push({
-        store_id,
-        item_id: "draft_001",
-        name_ja: "ねぎま",
-        price: 220,
-        category: "焼き鳥",
-        image_status: "none",
-        ja18s_draft: "香ばしい鶏ももと長ねぎを…（18秒文）",
-        status: "needs_review",
-        qc_status: "needs_review",
-        qc_reason: "価格/部位の要確認",
-        owner_approved: false,
-        ja18s_final: "",
-        translation_status: "idle"
-      });
-    }
-    const items = store.menu.filter((x:any)=>x.store_id===store_id);
-    return json({ store_id, items });
-  }
+  const master = await realGetMenu(env, store_id);
+  const items = (master.items || []).map((it: any) => canonicalDefaults(it));
+  return Response.json({ store_id, items });
+}
 
-  // real: read from MENU_KV
-  const items = await realGetMenu(env, store_id);
-  return json({ store_id, items });
-};
+export async function onRequestPost({ request, env }: any) {
+  const body = await request.json();
+  const store_id = body.store_id;
+  const item_id = body.item_id;
+  if (!store_id || !item_id) return new Response("store_id,item_id required", { status: 400 });
+  const out = await realUpsertMenuItem(env, store_id, item_id, body);
+  return Response.json(out);
+}
