@@ -2,3 +2,7 @@
 # ignore rescued broken GAS artifacts
 TRS_*.gs
 ../TRS_*.gs
+.wrangler/
+node_modules/
+docs/issues_backup/
+tools/
