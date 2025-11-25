@@ -6,6 +6,12 @@
 
 import { QC_RULES, Lang } from "./prompt-registry";
 
+const LANGUAGE_RULES: Partial<Record<Lang, { forbid?: RegExp[]; mustMention?: string[] }>> = {
+  en: { forbid: [/cure/i], mustMention: ["yakitori"] },
+  ko: { mustMention: ["yakitori"] },
+  "zh-Hans": { mustMention: ["yakitori"] },
+};
+
 export type LocalizedOut = {
   lang: Lang;
   name_localized: string;
@@ -17,13 +23,15 @@ export async function qcCheckOne(env: any, out: LocalizedOut) {
   const body = String(out.body_localized || "");
   const name = String(out.name_localized || "");
 
+  const langRules = LANGUAGE_RULES[out.lang] || {};
+  const forbidList = [...(QC_RULES.forbid || []), ...(langRules.forbid || [])];
+  const mustList = [...(QC_RULES.mustMention || []), ...(langRules.mustMention || [])];
+
   // forbid patterns
-  const forbidHit =
-    (QC_RULES.forbid || []).find((r) => r.test(body) || r.test(name));
+  const forbidHit = forbidList.find((r) => r.test(body) || r.test(name));
 
   // mustMention keywords (simple baseline)
-  const mustMiss =
-    (QC_RULES.mustMention || []).find((k) => !body.toLowerCase().includes(String(k).toLowerCase()));
+  const mustMiss = mustList.find((k) => !body.toLowerCase().includes(String(k).toLowerCase()));
 
   if (forbidHit || mustMiss) {
     const reason = forbidHit
