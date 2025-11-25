@@ -1,78 +1,71 @@
-// CP3-DRAIN + CP4-QC-AUTO: translation drain with QC gate
-import { realGetMenu, realUpsertMenuItem } from "../_real/menu";
-import { llmTranslateItem } from "../_real/llm";
-import { qcCheckOne } from "../lib/qc-automation";
+import { realGetMenu, realUpsertMenuItem } from "../../_real/menu";
+import { expand14langs, translateOne } from "../../lib/translate";
+import { backoffMs, dueNow } from "../../lib/batch";
 
-export async function onRequestPost(req: Request & { env: any }) {
-  const { store_id } = await req.json().catch(() => ({}));
-  if (!store_id) {
-    return new Response("store_id required", { status: 400 });
-  }
+export const onRequestPost: PagesFunction = async (ctx) => {
+  const { request, env } = ctx;
+  const { store_id } = await request.json<any>();
+  if (!store_id) return new Response("store_id required", { status: 400 });
 
-  const master = await realGetMenu(req.env, store_id);
-  const items = (master.items || []).filter((it: any) => it.owner_approved === true && String(it.qc_status).toLowerCase() === "ok");
+  const menu = await realGetMenu(env as any, store_id);
+  const items = (menu.items || [])
+    .filter((it: any) => it.translation_status === "queued")
+    .filter((it: any) => dueNow(it));
+
+  const limit = Number((env as any).BATCH_RUN_LIMIT || 10);
+  const target = items.slice(0, limit);
 
   let drained = 0;
   let errors = 0;
 
-  const qcEnabled = String((req.env.QC_AUTOMATION || "off")).toLowerCase() === "on";
-
-  for (const item of items) {
-    const item_id = item.item_id;
-
+  for (const it of target) {
     try {
-      await realUpsertMenuItem(req.env, store_id, item_id, {
-        translation_status: "running",
-        translation_error: null,
+      const jobs = expand14langs({
+        store_id,
+        item_id: it.item_id,
+        ja_name: it.ja_name || it.name_ja,
+        ja18s_final: it.ja18s_final,
       });
 
-      const llmOut = await llmTranslateItem(req.env, item);
-      const translations: Record<string, { name_localized: string; body_localized: string }> = {};
-
-      for (const [lang, payload] of Object.entries(llmOut.translations || {})) {
-        const localized = {
-          lang,
-          name_localized: payload.name,
-          body_localized: payload.desc,
-        };
-        if (qcEnabled) {
-          await qcCheckOne(req.env, localized);
-        }
-        translations[lang] = {
-          name_localized: localized.name_localized,
-          body_localized: localized.body_localized,
-        };
+      const outs: any[] = [];
+      for (const j of jobs) {
+        const out = await translateOne(env as any, j);
+        outs.push(out);
       }
 
-      await realUpsertMenuItem(req.env, store_id, item_id, {
+      const translations = Object.fromEntries(
+        outs.map((o) => [o.lang, { name_localized: o.name_localized, body_localized: o.body_localized }])
+      );
+
+      await realUpsertMenuItem(env as any, store_id, it.item_id, {
         translations,
         translation_status: "done",
         translation_error: null,
       });
 
       drained++;
-    } catch (error: any) {
+    } catch (e: any) {
       errors++;
-      await realUpsertMenuItem(req.env, store_id, item_id, {
+      const attempt = Number(it.attempt || 0) + 1;
+      const next_retry_at = Date.now() + backoffMs(attempt);
+
+      await realUpsertMenuItem(env as any, store_id, it.item_id, {
         translation_status: "error",
-        translation_error: String(error?.message || error),
-      }).catch(() => {});
+        translation_error: String(e?.message || e),
+        attempt,
+        next_retry_at,
+      });
     }
   }
 
-  const remaining = (await realGetMenu(req.env, store_id)).items?.filter((it: any) => it.translation_status !== "done")?.length || 0;
-  const success = drained;
+  // remainingは「due待ち含め queued がまだある数」
+  const menu2 = await realGetMenu(env as any, store_id);
+  const remaining = (menu2.items || []).filter((it: any) => it.translation_status === "queued").length;
 
-  return new Response(
-    JSON.stringify({
-      store_id,
-      queued: items.length,
-      drained,
-      success,
-      errors,
-      remaining,
-      note: "CP3-DRAIN/CP4-QC-AUTO running",
-    }),
-    { headers: { "content-type": "application/json" } }
-  );
-}
+  return Response.json({
+    drained,
+    errors,
+    queued: remaining,
+    note: "real drain with chunk+retry/backoff (CP4 async-batch)",
+  });
+};

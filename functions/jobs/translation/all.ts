@@ -1,27 +1,34 @@
-import { Env, json, isMock, bad, store } from "../../_utils";
-import { realGetMenu, realUpsertMenuItem } from "../../_real/store";
+import { realGetMenu, realUpsertMenuItem } from "../../_real/menu";
+import { makeBatchId, chunkify } from "../../lib/batch";
 
-/**
- * POST /jobs/translation/all
- * body: { store_id }
- * approved & qc ok の item_id を全部 queued 化
- */
-export const onRequestPost: PagesFunction<Env> = async ({ env, request }) => {
-  const body = await request.json().catch(()=>null) as any;
-  const store_id = body?.store_id;
-  if (!store_id) return bad(422, "INVALID", "store_id required");
+export const onRequestPost: PagesFunction = async (ctx) => {
+  const { request, env } = ctx;
+  const { store_id } = await request.json<any>();
+  if (!store_id) return new Response("store_id required", { status: 400 });
 
-  if (isMock(env)) {
-    const cnt = store.menu.filter((x:any)=>x.store_id===store_id && x.owner_approved && x.qc_status==="ok").length;
-    return json({ status:"queued", count: cnt });
+  const menu = await realGetMenu(env as any, store_id);
+  const items = (menu.items || [])
+    .filter((it: any) => it.owner_approved === true && it.qc_status === "ok");
+
+  const chunkSize = Number((env as any).BATCH_CHUNK_SIZE || 20);
+  const chunks = chunkify(items, chunkSize);
+  const batch_id = makeBatchId(store_id);
+
+  let queued = 0;
+  for (let c = 0; c < chunks.length; c++) {
+    for (const it of chunks[c]) {
+      const incoming = {
+        translation_status: "queued",
+        batch_id,
+        chunk_id: c,
+        chunk_size: chunkSize,
+        attempt: 0,
+        next_retry_at: 0,
+      };
+      await realUpsertMenuItem(env as any, store_id, it.item_id, incoming);
+      queued++;
+    }
   }
 
-  const items = await realGetMenu(env, store_id);
-  const targets = items.filter((x:any)=>x.owner_approved && x.qc_status==="ok");
-
-  for (const it of targets) {
-    await realUpsertMenuItem(env, store_id, { ...it, translation_status: "queued" });
-  }
-
-  return json({ status:"queued", count: targets.length });
+  return Response.json({ debug, { status: "queued", count: queued, batch_id, chunks: chunks.length });
 };
