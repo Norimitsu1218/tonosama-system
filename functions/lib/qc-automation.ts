@@ -1,30 +1,22 @@
-// QC automation calling /qc/gemini endpoint + minimal rules
-import { QC_RULES } from "./prompt-registry";
+// CP4-QC-AUTO: lightweight QC rules (per lang)
+// Throw on NG; caller handles try/catch and marks translation_status:error.
 
-export async function qcCheckOne(env: any, job: any) {
-  const base = env.BASE_URL || "http://localhost:8788";
-  const res = await fetch(new URL("/qc/gemini", base), {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      lang: job.lang,
-      text: job.text,
-      item_id: job.item_id,
-      store_id: job.store_id,
-    }),
-  });
+const forbid = [
+  "raw translation", "literally", "not sure", "unknown",
+];
 
-  const qc = await res.json().catch(() => ({}));
+const mustMention = [
+  "texture", "taste",
+];
 
-  const forbidHit = (QC_RULES.forbid || []).find((r) => r.test(job.text));
-  const mustMiss = (QC_RULES.mustMention || []).find((k) => !job.text.includes(k));
+export function qcCheckOne(lang: string, text: string) {
+  const low = text.toLowerCase();
 
-  if (forbidHit || mustMiss || qc?.status === "ng") {
-    const reason =
-      qc?.reason ||
-      (forbidHit ? `forbid:${String(forbidHit)}` : "") ||
-      (mustMiss ? `mustMention:${mustMiss}` : "unknown");
-    throw new Error(`QC NG: ${reason}`);
+  for (const f of forbid) {
+    if (low.includes(f)) throw new Error(`QC_FORBID:${f}`);
   }
-  return qc;
+  for (const m of mustMention) {
+    if (!low.includes(m)) throw new Error(`QC_MISSING:${m}`);
+  }
+  return true;
 }
