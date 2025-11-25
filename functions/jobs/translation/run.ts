@@ -3,8 +3,6 @@ import { realGetMenu, realUpsertMenuItem } from "../_real/menu";
 import { llmTranslateItem } from "../_real/llm";
 import { qcCheckOne } from "../lib/qc-automation";
 
-const QC_ENABLED = (process.env.QC_AUTOMATION || "off").toLowerCase() === "on";
-
 export async function onRequestPost(req: Request & { env: any }) {
   const { store_id } = await req.json().catch(() => ({}));
   if (!store_id) {
@@ -16,6 +14,8 @@ export async function onRequestPost(req: Request & { env: any }) {
 
   let drained = 0;
   let errors = 0;
+
+  const qcEnabled = String((req.env.QC_AUTOMATION || "off")).toLowerCase() === "on";
 
   for (const item of items) {
     const item_id = item.item_id;
@@ -35,7 +35,7 @@ export async function onRequestPost(req: Request & { env: any }) {
           name_localized: payload.name,
           body_localized: payload.desc,
         };
-        if (QC_ENABLED) {
+        if (qcEnabled) {
           await qcCheckOne(req.env, localized);
         }
         translations[lang] = {
