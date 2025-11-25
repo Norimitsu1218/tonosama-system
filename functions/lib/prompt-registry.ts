@@ -1,61 +1,50 @@
-// Central registry for production prompts + rules.
-// Replace text blocks with your real production prompts.
-// Controlled by PROMPT_VERSION.
+// CP4-PROMPTS: production prompt registry (14 langs)
+// NOTE: keep it simple; real content can be swapped later.
 
-export type LangCode =
+export type Lang =
   | "en" | "ko" | "zh-Hans" | "zh-Hant" | "yue"
-  | "th" | "tl" | "vi" | "id" | "es" | "de" | "fr" | "it" | "pt";
+  | "th" | "fil" | "vi" | "id" | "es" | "de" | "fr" | "it" | "pt";
 
-export const LANGS: LangCode[] = [
-  "en","ko","zh-Hans","zh-Hant","yue","th","tl","vi","id","es","de","fr","it","pt"
-];
+export function getProdPrompt(lang: Lang) {
+  // TODO: replace bodies with final master prompt text per lang.
+  // For now, return stable placeholders to prove wiring.
+  const header = "You are a localization copywriter for a yakitori izakaya.";
+  const rules = [
+    "Write culturally localized paraphrase, not literal translation.",
+    "Must include CROP: appearance, texture, taste+safety+numbers, light CTA.",
+    "If yakitori first mention, briefly explain what yakitori is.",
+    "Mention animal/part, doneness/heat level, remove harsh odor wording.",
+    "Use EM-dash —, localize numbers/units."
+  ].join("\\n");
 
-export function getProdPrompt(env: any, lang: LangCode) {
-  const base = `
-You are TONOSAMA multilingual food localization editor.
-Generate a localized 18-second read food review + how-to-eat + pairing.
-Follow house style and safety. Output only in target language.
-`.trim();
+  const body = `LANG=${lang}
+${header}
+RULES:
+${rules}
 
-  
-const perLang: Record<string, string> = {
-  // S68-03 SLOT:
-  // ここをあなたの「本番14言語ローカライズ意訳プロンプト全文」に置換するだけで完了。
-  // 形式: langCode: `...prompt...`
-  en: base + `
-[TBD PROD PROMPT EN]`,
-  ko: base + `
-[TBD PROD PROMPT KO]`,
-  "zh-Hans": base + `
-[TBD PROD PROMPT ZH-HANS]`,
-  "zh-Hant": base + `
-[TBD PROD PROMPT ZH-HANT]`,
-  yue: base + `
-[TBD PROD PROMPT YUE]`,
-  th: base + `
-[TBD PROD PROMPT TH]`,
-  tl: base + `
-[TBD PROD PROMPT TL]`,
-  vi: base + `
-[TBD PROD PROMPT VI]`,
-  id: base + `
-[TBD PROD PROMPT ID]`,
-  es: base + `
-[TBD PROD PROMPT ES]`,
-  de: base + `
-[TBD PROD PROMPT DE]`,
-  fr: base + `
-[TBD PROD PROMPT FR]`,
-  it: base + `
-[TBD PROD PROMPT IT]`,
-  pt: base + `
-[TBD PROD PROMPT PT]`,
-};
+OUTPUT JSON:
+{
+  "name_localized": "...",
+  "body_localized": "..."
+}
+`;
 
-  return (perLang[lang] || base).trim();
+  return body;
 }
 
-export const QC_RULES = {
-  forbid: [/overclaim/i, /miracle/i],
-  mustMention: ["yakitori"],
-};
+export function buildPrompt(lang: Lang, input: {
+  name_ja: string;
+  ja18s_final: string;
+  price?: number;
+  category?: string;
+}) {
+  const prod = getProdPrompt(lang);
+  const user = [
+    `name_ja: ${input.name_ja}`,
+    input.category ? `category: ${input.category}` : "",
+    input.price != null ? `price_jpy: ${input.price}` : "",
+    `ja18s_final: ${input.ja18s_final}`
+  ].filter(Boolean).join("\\n");
+
+  return `${prod}\\nINPUT:\\n${user}`;
+}
