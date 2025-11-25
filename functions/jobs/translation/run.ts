@@ -16,6 +16,8 @@ export async function onRequestPost({ request, env }: any) {
   for (const job of queued) {
     try {
       const out = await translateOne(env, job);
+
+  if ((env.QC_AUTOMATION||"off")==="on") { await qcCheckOne(env,{lang, ...out}); }
       await markTranslationDone(env, store_id, job.item_id, out);
       success++;
     } catch (e: any) {

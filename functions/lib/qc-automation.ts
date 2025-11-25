@@ -1,30 +1,36 @@
-// QC automation calling /qc/gemini endpoint + minimal rules
-import { QC_RULES } from "./prompt-registry";
+/**
+ * CP4-QC-AUTO: Automated QC for localized outputs.
+ * - Accepts { name_localized, body_localized }
+ * - Throws on NG so caller can mark translation_status=error
+ */
 
-export async function qcCheckOne(env: any, job: any) {
-  const base = env.BASE_URL || "http://localhost:8788";
-  const res = await fetch(new URL("/qc/gemini", base), {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      lang: job.lang,
-      text: job.text,
-      item_id: job.item_id,
-      store_id: job.store_id,
-    }),
-  });
+import { QC_RULES, Lang } from "./prompt-registry";
 
-  const qc = await res.json().catch(() => ({}));
+export type LocalizedOut = {
+  lang: Lang;
+  name_localized: string;
+  body_localized: string;
+  price?: number | string;
+};
 
-  const forbidHit = (QC_RULES.forbid || []).find((r) => r.test(job.text));
-  const mustMiss = (QC_RULES.mustMention || []).find((k) => !job.text.includes(k));
+export async function qcCheckOne(env: any, out: LocalizedOut) {
+  const body = String(out.body_localized || "");
+  const name = String(out.name_localized || "");
 
-  if (forbidHit || mustMiss || qc?.status === "ng") {
-    const reason =
-      qc?.reason ||
-      (forbidHit ? `forbid:${String(forbidHit)}` : "") ||
-      (mustMiss ? `mustMention:${mustMiss}` : "unknown");
+  // forbid patterns
+  const forbidHit =
+    (QC_RULES.forbid || []).find((r) => r.test(body) || r.test(name));
+
+  // mustMention keywords (simple baseline)
+  const mustMiss =
+    (QC_RULES.mustMention || []).find((k) => !body.toLowerCase().includes(String(k).toLowerCase()));
+
+  if (forbidHit || mustMiss) {
+    const reason = forbidHit
+      ? `forbid:${String(forbidHit)}`
+      : `mustMention:${String(mustMiss)}`;
     throw new Error(`QC NG: ${reason}`);
   }
-  return qc;
+
+  return { status: "ok", reason: null };
 }
