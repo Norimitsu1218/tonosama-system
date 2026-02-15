@@ -1,0 +1,23 @@
+{
+  "name": "tonosama-system",
+  "private": true,
+  "workspaces": ["apps/*", "functions", "ai/*"],
+  "scripts": {
+    "build": "npm run build:guest",
+    "dev:guest": "npm run dev --workspace @tonosama/pwa-guest",
+    "dev:guest:ssr": "npm run dev:guest",
+    "dev:owner": "npm run dev --workspace @tonosama/pwa-owner",
+    "stop:guest": "npm run stop --workspace @tonosama/pwa-guest",
+    "build:guest": "npm run build --workspace @tonosama/pwa-guest",
+    "build:guest:ssr": "npm run build:guest",
+    "build:owner": "npm run build --workspace @tonosama/pwa-owner",
+    "build:guest:static": "npm run build:static --workspace @tonosama/pwa-guest",
+    "start:guest:ssr": "npm run start --workspace @tonosama/pwa-guest",
+    "typecheck:guest": "npm run typecheck --workspace @tonosama/pwa-guest",
+    "test:e2e:guest": "npm run test:e2e --workspace @tonosama/pwa-guest",
+    "test:functions": "npm run test --workspace @tonosama/functions",
+    "ci:guest:ssr": "npm run build && npm run typecheck:guest && npm run test:e2e:guest && npm run test:functions",
+    "ops:secret:clipboard": "sh scripts/set-secret-from-clipboard.sh",
+    "ops:secret:press1": "sh scripts/apply-secret-on-1.sh"
+  }
+}

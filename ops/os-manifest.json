@@ -1,0 +1,7 @@
+{
+  "license": "INTERNAL_REVIEW_ONLY",
+  "consent": "explicit_clickwrap_required",
+  "tos_basis": "guest_runtime_terms_v1",
+  "intent": "restaurant_guest_order_flow",
+  "allowed_use": ["guest_runtime", "ops_review"]
+}

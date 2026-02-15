@@ -1,0 +1,21 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Guest clients must read through Cloud Functions only.
+    match /stores/{storeId} {
+      allow read, write: if false;
+    }
+
+    match /menu_items/{storeId}/{itemId} {
+      allow read, write: if false;
+    }
+
+    match /drinks/{storeId}/{drinkId} {
+      allow read, write: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

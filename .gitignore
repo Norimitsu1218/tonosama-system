@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Next.js outputs
+.next/
+out/
+out-static/
+
+# Test outputs
+playwright-report/
+test-results/
+
+# TypeScript cache
+*.tsbuildinfo
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment files
+.env
+.env.*
+!.env.example

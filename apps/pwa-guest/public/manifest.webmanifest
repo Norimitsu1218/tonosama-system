@@ -1,0 +1,10 @@
+{
+  "name": "TONOSAMA OS Guest",
+  "short_name": "TONOSAMA",
+  "description": "Runtime Guest PWA",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f7f5ee",
+  "theme_color": "#f7f5ee",
+  "lang": "ja"
+}

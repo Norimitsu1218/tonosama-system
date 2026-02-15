@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "constraints": {
+    "gate_allowlist_paid_trial_only": true,
+    "explicit_clickwrap_required": true,
+    "functions_only_guest_data_path": true,
+    "aggregate_analytics_only": true,
+    "sensitive_inference_prohibited": true,
+    "fail_closed_default": true
+  }
+}

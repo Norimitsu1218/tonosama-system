@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TONOSAMA OS Manifest",
+  "type": "object",
+  "required": ["license", "consent", "tos_basis", "intent", "allowed_use"],
+  "properties": {
+    "license": {
+      "type": "string",
+      "minLength": 1
+    },
+    "consent": {
+      "type": "string",
+      "minLength": 1
+    },
+    "tos_basis": {
+      "type": "string",
+      "minLength": 1
+    },
+    "intent": {
+      "type": "string",
+      "minLength": 1
+    },
+    "allowed_use": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 1
+    }
+  },
+  "additionalProperties": true
+}
