@@ -5,6 +5,7 @@ node_modules/
 .next/
 out/
 out-static/
+.firebase/
 
 # Test outputs
 playwright-report/
@@ -12,6 +13,7 @@ test-results/
 
 # TypeScript cache
 *.tsbuildinfo
+functions/lib/
 
 # Logs
 npm-debug.log*

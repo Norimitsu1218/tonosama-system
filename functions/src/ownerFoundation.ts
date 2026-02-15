@@ -339,9 +339,9 @@ function parseRulesBody(raw: unknown):
     supportsCashless: raw.supportsCashless,
     hasWifi: raw.hasWifi,
     hasOtoshi: raw.hasOtoshi,
-    mapUrl: parseSourceUrl(raw.mapUrl),
-    lpHeroImageUrl: parseSourceUrl(raw.lpHeroImageUrl),
-    lpHeroVideoUrl: parseSourceUrl(raw.lpHeroVideoUrl),
+    mapUrl: parseSourceUrl(raw.mapUrl) ?? undefined,
+    lpHeroImageUrl: parseSourceUrl(raw.lpHeroImageUrl) ?? undefined,
+    lpHeroVideoUrl: parseSourceUrl(raw.lpHeroVideoUrl) ?? undefined,
     liabilityAccepted: {
       allergy: raw.liabilityAllergyAccepted === true,
       religion: raw.liabilityReligionAccepted === true
@@ -495,7 +495,7 @@ function parseShopCardVisionBody(raw: unknown):
   };
 }
 
-async function authorizeOwner(req: Parameters<typeof onRequest>[1] extends never ? never : any, storeId: string) {
+async function authorizeOwner(req: any, storeId: string) {
   const auth = await verifyOwnerRequest(req, storeId);
   if (!auth.ok) {
     return { ok: false as const, status: auth.status };

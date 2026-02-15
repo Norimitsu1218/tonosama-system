@@ -2,8 +2,12 @@
   "name": "@tonosama/functions",
   "private": true,
   "version": "0.1.0",
-  "type": "module",
+  "main": "lib/index.js",
+  "engines": {
+    "node": "20"
+  },
   "scripts": {
+    "build": "tsc -p tsconfig.json",
     "test": "node --import tsx --test src/**/*.test.ts",
     "verify:hash": "node --import tsx src/verifyApprovalHashCli.ts"
   },

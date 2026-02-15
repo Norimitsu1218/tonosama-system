@@ -5,8 +5,18 @@
   "targets": {
     "REPLACE_WITH_FIREBASE_PROJECT_ID": {
       "hosting": {
-        "guest": ["REPLACE_WITH_HOSTING_SITE_ID"]
+        "guest": [
+          "REPLACE_WITH_HOSTING_SITE_ID"
+        ]
+      }
+    },
+    "apicius-6bcae": {
+      "hosting": {
+        "guest": [
+          "apicius-6bcae"
+        ]
       }
     }
-  }
+  },
+  "etags": {}
 }
