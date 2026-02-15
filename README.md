@@ -279,6 +279,12 @@ Guest Runtime no longer reads Firestore directly. It uses Functions APIs only:
 - Latest completion matrix (`⭕️/🔺/💁‍♂️/❌`) is tracked in `docs/completion-matrix.md`.
 - Runtime execution DAG (Policy/Capability/Experience) is tracked in `docs/runtime-exec-dag.md`.
 - MCP + Genkit + UI/UX implementation playbook is in `docs/mcp-genkit-uiux-playbook.md`.
+- Baseline files:
+  - Genkit flow boundary: `ai/genkit/flows/okami.local.ts`
+  - MCP read-only contract: `ai/genkit/tools/mcp-readonly.ts`
+  - Gems prompt pack: `ai/gems/okami-gems.json`
+- Quick check:
+`npm run ops:ai:check`
 - Information collection role assignment map is in `docs/information-collection-role-map.md`.
 - Stripe manual setup links are in `docs/stripe-secret-setup-links.md`.
 - Stripe setup launcher:
