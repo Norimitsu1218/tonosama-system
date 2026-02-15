@@ -107,6 +107,10 @@ Guest Runtime no longer reads Firestore directly. It uses Functions APIs only:
   - define required secrets in your local Functions env file (do not commit secrets).
 - Production Functions:
   - set required secrets in Firebase Functions runtime config before deploy.
+- Fastest safe setup (recommended):
+`PROJECT_ID=<gcp-project-id> npm run ops:secrets:setup`
+  - This prompts each required secret in order and applies from clipboard.
+  - No secret value is printed.
 - Clipboard secret registration (default: Firebase Functions only):
 `npm run ops:secret:clipboard -- STRIPE_WEBHOOK_SECRET`
 `npm run ops:secret:clipboard -- STRIPE_SECRET_KEY`
