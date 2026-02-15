@@ -16,6 +16,7 @@ type GateState = "checking" | "allowed" | "blocked";
 type OkamiClass = "SECURITY" | "RULE" | "PLACE" | "SOUL";
 type DiscoverySort = "MOOD" | "PRICE_ASC" | "PRICE_DESC" | "NAME";
 type DetailMode = "AUTO" | "COMPACT" | "RICH";
+type DemoTarget = "BLOCKED" | "AWAKENING" | "MOOD" | "DISCOVERY" | "SLIP" | "SUMIMASEN";
 
 type MenuItem = {
   id: string;
@@ -690,6 +691,57 @@ export default function StoreFlowClient({ storeId }: StoreFlowClientProps) {
 
   const total = trayEntries.reduce((sum, entry) => sum + entry.item.price * entry.count, 0);
 
+  function createDemoSlip() {
+    setSlipNo(`S-${new Date().toISOString().slice(11, 19).replace(/:/g, "")}`);
+    setSlipAt(new Date().toISOString());
+  }
+
+  function runDemoPreset(target: DemoTarget) {
+    if (!mockMode) {
+      return;
+    }
+    if (target === "BLOCKED") {
+      setPaymentStatus("NG");
+      setStep("AWAKENING");
+      return;
+    }
+    setPaymentStatus("PAID");
+    setGateState("allowed");
+    setConsentChecked(true);
+    setBasicListMode(false);
+    setBasicListBlockedByConsent(false);
+    setShowSouvenir(false);
+    setCalled(false);
+    setSecurityBlock(null);
+
+    if (target === "AWAKENING") {
+      setStep("AWAKENING");
+      return;
+    }
+    if (target === "MOOD") {
+      setStep("MOOD");
+      return;
+    }
+
+    setMood("HUNGRY");
+    if (trayEntries.length === 0) {
+      const fallbackId = menuItems[0]?.id ?? "ramen";
+      setTray({ [fallbackId]: 1 });
+    }
+
+    if (target === "DISCOVERY") {
+      setStep("DISCOVERY");
+      return;
+    }
+
+    createDemoSlip();
+    if (target === "SLIP") {
+      setStep("SLIP");
+      return;
+    }
+    setStep("SUMIMASEN");
+  }
+
   function addToTray(itemId: string, triggerEl?: HTMLElement) {
     const selectedAllergens = allergyInput
       .split(",")
@@ -1224,8 +1276,7 @@ export default function StoreFlowClient({ storeId }: StoreFlowClientProps) {
             onClick={() => {
               trackEvent("slip");
               void emitTelemetry(gateToken, "slip");
-              setSlipNo(`S-${new Date().toISOString().slice(11, 19).replace(/:/g, "")}`);
-              setSlipAt(new Date().toISOString());
+              createDemoSlip();
               setStep("SLIP");
             }}
             data-testid="order-button"
@@ -1381,6 +1432,42 @@ export default function StoreFlowClient({ storeId }: StoreFlowClientProps) {
           {usingFallbackMenu ? <p className="small">{UI_TEXT[locale].fallbackNotice}</p> : null}
           {menuCacheStale ? <p className="small caution">cached menu is stale; retry store data when online.</p> : null}
         </section>
+
+        {mockMode ? (
+          <section className="card flow-card demo-guide" data-testid="demo-guide">
+            <h2>Sample Guide</h2>
+            <p className="small">このURLはモックモードです。実データ不要で挙動を確認できます。</p>
+            <p className="small">
+              推奨URL: <code>/s/{storeId}?mock=1&lang=ja</code>
+            </p>
+            <ol className="demo-steps">
+              <li>1. `NGブロック` で fail-closed を確認</li>
+              <li>2. `Awakening` で同意チェックを確認</li>
+              <li>3. `Mood` から `Discovery` へ進行</li>
+              <li>4. `Slip` と `SUMIMASEN` で注文完了まで確認</li>
+            </ol>
+            <div className="demo-jump">
+              <button className="btn btn-quiet" type="button" onClick={() => runDemoPreset("BLOCKED")}>
+                NGブロック
+              </button>
+              <button className="btn btn-quiet" type="button" onClick={() => runDemoPreset("AWAKENING")}>
+                Awakening
+              </button>
+              <button className="btn btn-quiet" type="button" onClick={() => runDemoPreset("MOOD")}>
+                Mood
+              </button>
+              <button className="btn btn-quiet" type="button" onClick={() => runDemoPreset("DISCOVERY")}>
+                Discovery
+              </button>
+              <button className="btn btn-quiet" type="button" onClick={() => runDemoPreset("SLIP")}>
+                Slip
+              </button>
+              <button className="btn btn-quiet" type="button" onClick={() => runDemoPreset("SUMIMASEN")}>
+                SUMIMASEN
+              </button>
+            </div>
+          </section>
+        ) : null}
 
         {!mockMode && gateState === "checking" ? (
           <section className="card flow-card">
