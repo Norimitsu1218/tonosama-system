@@ -14,6 +14,9 @@
       "hosting": {
         "guest": [
           "apicius-6bcae"
+        ],
+        "owner": [
+          "apicius-owner"
         ]
       }
     }

@@ -1220,7 +1220,7 @@ export default function OwnerPage() {
           />
         </div>
         <div className="row">
-          <label htmlFor="pairing-overrides">pairing overrides JSON (foodId -> [drinkId,...])</label>
+          <label htmlFor="pairing-overrides">pairing overrides JSON (foodId {"->"} [drinkId,...])</label>
           <textarea
             id="pairing-overrides"
             value={pairingOverridesText}
