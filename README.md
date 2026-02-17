@@ -187,6 +187,7 @@ Guest Runtime no longer reads Firestore directly. It uses Functions APIs only:
 ## CI Deploy
 
 - Workflow: `.github/workflows/firebase-deploy.yml` (runs on `main-v2` push).
+- Continuous runtime watch: `.github/workflows/runtime-watch.yml` (every 30 minutes + manual dispatch).
 - Required repository secret:
   - `GCP_WIF_PROVIDER` (Workload Identity Provider resource name).
   - `GCP_DEPLOY_SA` (deploy service account email).
