@@ -261,6 +261,13 @@ Guest Runtime no longer reads Firestore directly. It uses Functions APIs only:
   - slip metadata: generated slip number + timestamp
 - New store checklist generator:
 `STORE_ID=<storeId> BASE_URL=https://<your-host> sh ops/new-store.sh`
+- 10-second geo bootstrap (one command):
+`OWNER_API_TOKEN=<token> LAT=35.6764 LNG=139.6500 BASE_URL=https://apicius-owner.web.app npm run ops:geo:launch`
+  - Optional:
+    - `PARTNER_ID=partner-demo` (default: `partner-demo`)
+    - `STORE_NAME="鮨 とのさま"` for custom initial name
+    - `SOURCE_URL=https://example.jp` for initial source hint
+    - `OPEN=1` to open generated guest URL automatically on macOS
 - Telemetry daily counters (Firestore):
 `STORE_ID=<storeId> DAY=<yyyymmdd> node --input-type=module -e "import {initializeApp,applicationDefault} from 'firebase-admin/app'; import {getFirestore} from 'firebase-admin/firestore'; initializeApp({credential: applicationDefault()}); const db=getFirestore(); const id=\`\${process.env.STORE_ID}_\${process.env.DAY}\`; const snap=await db.collection('telemetry_daily').doc(id).get(); console.log(JSON.stringify(snap.data() ?? {}, null, 2)); process.exit(0);"`
 - Owner local env:
