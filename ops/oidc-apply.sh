@@ -4,8 +4,8 @@ set -eu
 PROJECT_ID="${PROJECT_ID:-}"
 GH_ORG="${GH_ORG:-}"
 GH_REPO="${GH_REPO:-tonosama-system}"
-POOL_ID="${POOL_ID:-gh-pool-tonosama}"
-PROVIDER_ID="${PROVIDER_ID:-gh-provider-tonosama}"
+POOL_ID="${POOL_ID:-tonosama-gh-pool}"
+PROVIDER_ID="${PROVIDER_ID:-tonosama-gh-provider}"
 SA_NAME="${SA_NAME:-gh-deploy-tonosama}"
 DEPLOY_BRANCH="${DEPLOY_BRANCH:-main-v2}"
 
