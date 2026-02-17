@@ -41,11 +41,14 @@ label {
 }
 
 input,
-textarea {
+textarea,
+select {
   border: 1px solid #94a3b8;
   border-radius: 8px;
   padding: 8px 10px;
   font-size: 14px;
+  background: #fff;
+  color: #0f172a;
 }
 
 .actions {
@@ -80,4 +83,133 @@ button:disabled {
 
 .status.err {
   color: #b91c1c;
+}
+
+.demo-board {
+  border-color: #0f172a;
+  background:
+    radial-gradient(circle at top right, rgb(191 219 254 / 45%), transparent 52%),
+    #fff;
+}
+
+.demo-steps {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+}
+
+.demo-links {
+  border: 1px dashed #94a3b8;
+  border-radius: 8px;
+  padding: 10px;
+  background: #f8fafc;
+}
+
+.review-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.review-card {
+  border: 1px solid #cbd5e1;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.review-card img {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  display: block;
+}
+
+.review-card.is-approved {
+  border-color: #16a34a;
+}
+
+.review-card.is-rejected {
+  border-color: #dc2626;
+  opacity: 0.72;
+}
+
+.review-body {
+  padding: 10px;
+  display: grid;
+  gap: 6px;
+}
+
+.review-body h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.checkline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.pagination {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.review-deck {
+  display: grid;
+  gap: 10px;
+}
+
+.review-deck-stack {
+  position: relative;
+  min-height: 420px;
+}
+
+.review-deck-card {
+  position: absolute;
+  inset: 0;
+  border: 1px solid #cbd5e1;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #fff;
+  touch-action: pan-y;
+  transition: transform 0.15s ease;
+}
+
+.review-deck-card img {
+  width: 100%;
+  height: 220px;
+  object-fit: cover;
+  display: block;
+}
+
+.review-deck-card.preview {
+  opacity: 0.8;
+}
+
+.review-deck-card.done {
+  display: grid;
+  place-items: center;
+  position: relative;
+}
+
+.review-deck-body {
+  padding: 12px;
+  display: grid;
+  gap: 6px;
+}
+
+.review-deck-body h3 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.review-deck-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
 }

@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import { onRequest } from "firebase-functions/v2/https";
+import { genkit, z as genkitZ } from "genkit";
+import { googleAI } from "@genkit-ai/googleai";
 import { evaluateKillSwitch } from "./killSwitch";
 import {
   applyContextDeterministic,
@@ -21,11 +23,39 @@ type CacheState = {
   expiresAt: number;
 };
 
+interface IInput {
+  storeId: string;
+  text: string;
+  context?: unknown;
+}
+
+interface IOutput {
+  classification: "SECURITY" | "RULE" | "ORDER" | "CHAT";
+  reply: string;
+  action?: "add_cart" | "call_staff" | "checkout";
+  suggestedItems?: string[];
+}
+
+const GeminiOutputSchema = genkitZ.object({
+  classification: genkitZ.enum(["SECURITY", "RULE", "ORDER", "CHAT"]),
+  reply: genkitZ.string(),
+  action: genkitZ.enum(["add_cart", "call_staff", "checkout"]).optional(),
+  suggestedItems: genkitZ.array(genkitZ.string()).optional()
+});
+
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX = 60;
 const rateState = new Map<string, RateState>();
 const CACHE_TTL_MS = 5 * 60_000;
 const answerCache = new Map<string, CacheState>();
+
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY;
+const ai = GEMINI_API_KEY
+  ? genkit({
+      plugins: [googleAI({ apiKey: GEMINI_API_KEY })],
+      model: googleAI.model("gemini-2.5-flash")
+    })
+  : null;
 
 function parseBearerToken(header: string | undefined): string | null {
   if (!header) {
@@ -49,6 +79,69 @@ export function isPromptInjectionLike(input: string): boolean {
 
 export function buildOkamiResponse(kind: OkamiKind): OkamiResponse {
   return buildResponseDeterministic(kind);
+}
+
+async function runGeminiOkami(data: IInput): Promise<IOutput> {
+  if (!ai) {
+    throw new Error("gemini_not_ready");
+  }
+
+  const prompt = [
+    'You are "Okami", the AI concierge of TONOSAMA.',
+    "Classify user input into SECURITY, RULE, ORDER, or CHAT.",
+    "Keep response concise and polite in Japanese.",
+    "If malicious/safety risk, set classification SECURITY.",
+    "Context JSON:",
+    JSON.stringify(data.context ?? {}),
+    "User Input:",
+    data.text
+  ].join("\n");
+
+  const response = await ai.generate({
+    prompt,
+    output: {
+      schema: GeminiOutputSchema
+    },
+    config: {
+      temperature: 0.2,
+      maxOutputTokens: 220
+    }
+  });
+
+  const output = response.output;
+  if (!output) {
+    throw new Error("gemini_silence");
+  }
+  return output;
+}
+
+function mapGeminiToOkami(output: IOutput): OkamiResponse {
+  if (output.classification === "SECURITY") {
+    return {
+      kind: "SECURITY",
+      text: output.reply,
+      blocked: true
+    };
+  }
+  if (output.classification === "RULE") {
+    return {
+      kind: "RULE",
+      text: output.reply,
+      blocked: false
+    };
+  }
+  if (output.classification === "ORDER") {
+    return {
+      kind: "SOUL",
+      text: output.reply,
+      blocked: false
+    };
+  }
+  return {
+    kind: "SOUL",
+    text: output.reply,
+    blocked: false
+  };
 }
 
 function readForwardedIp(req: { headers: Record<string, unknown>; ip?: string }): string {
@@ -190,14 +283,48 @@ export const okamiAnswer = onRequest({ cors: true }, async (req, res) => {
     return;
   }
 
-  const kind = classifyOkamiPrompt(normalizedPrompt);
-  let out = buildOkamiResponse(kind);
+  let bundleStore: {
+    name: string | null;
+    address: string | null;
+    mapUrl: string | null;
+    businessRules: {
+      supportsCashless: boolean;
+      hasWifi: boolean;
+      hasOtoshi: boolean;
+    } | null;
+  } | null = null;
+
   try {
     const bundle = await readStoreBundle(payload.storeId);
-    out = applyStoreContext(out, bundle.store);
+    bundleStore = bundle.store;
   } catch {
-    // keep base answer when store context is unavailable
+    bundleStore = null;
   }
-  setCachedAnswer(payload.storeId, normalizedPrompt, out);
-  res.status(200).json(out);
+
+  try {
+    const generated = await runGeminiOkami({
+      storeId: payload.storeId,
+      text: normalizedPrompt,
+      context: {
+        store: bundleStore,
+        locale: req.body?.locale ?? null
+      }
+    });
+
+    let out = mapGeminiToOkami(generated);
+    if (bundleStore) {
+      out = applyStoreContext(out, bundleStore);
+    }
+    setCachedAnswer(payload.storeId, normalizedPrompt, out);
+    res.status(200).json(out);
+    return;
+  } catch {
+    const kind = classifyOkamiPrompt(normalizedPrompt);
+    let out = buildOkamiResponse(kind);
+    if (bundleStore) {
+      out = applyStoreContext(out, bundleStore);
+    }
+    setCachedAnswer(payload.storeId, normalizedPrompt, out);
+    res.status(200).json(out);
+  }
 });

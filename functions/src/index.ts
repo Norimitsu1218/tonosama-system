@@ -25,6 +25,8 @@ export {
   ownerShopCardImport,
   ownerPublishTrends,
   ownerInitialFeeCheckout,
+  ownerPartnerClosing,
+  ownerGeoBootstrap,
   ownerShopCardParse,
   ownerShopCardVisionParse,
   ownerStoreQr

@@ -25,6 +25,11 @@ fail() {
 PROJECT_ID="${PROJECT_ID:-}"
 [ -n "$PROJECT_ID" ] || {
   usage
+  echo ""
+  echo "[hint] Set PROJECT_ID from your Firebase project list:"
+  if command -v firebase >/dev/null 2>&1; then
+    firebase projects:list || true
+  fi
   fail "PROJECT_ID is required."
 }
 

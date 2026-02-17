@@ -1,14 +1,18 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { FieldValue, getFirestore } from "firebase-admin/firestore";
 import { onRequest } from "firebase-functions/v2/https";
+import type { StoreStatus } from "./storeStatus";
 
 type StripeEvent = {
   id?: string;
   type?: string;
   data?: {
     object?: {
+      id?: string;
       metadata?: {
         storeId?: string;
+        checkoutKind?: string;
+        flow?: string;
       };
       amount_total?: number;
       currency?: string;
@@ -18,11 +22,23 @@ type StripeEvent = {
 
 type StoreActivationPatch = {
   paymentStatus: "PAID";
+  status: StoreStatus;
+  isPublic: boolean;
+  publishedAtMs: number;
   activatedAtMs: number;
   onboarding: {
     checkoutStatus: "COMPLETED";
     initialFeePaidYen: number;
     initialFeePaidAtMs: number;
+  };
+  updatedAt: FieldValue;
+};
+
+type StoreGuestCheckoutPatch = {
+  onboarding: {
+    guestCheckoutStatus: "COMPLETED";
+    guestCheckoutAmountYen: number;
+    guestCheckoutAtMs: number;
   };
   updatedAt: FieldValue;
 };
@@ -108,12 +124,31 @@ async function persistCheckoutAggregate(event: StripeEvent): Promise<void> {
 
   const amountTotal = typeof event.data?.object?.amount_total === "number" ? event.data.object.amount_total : 0;
   const currency = typeof event.data?.object?.currency === "string" ? event.data.object.currency : "jpy";
+  const checkoutSessionId = typeof event.data?.object?.id === "string" ? event.data.object.id : "";
+  const metadata = event.data?.object?.metadata ?? {};
+  const checkoutKind = typeof metadata.checkoutKind === "string" ? metadata.checkoutKind : "";
+  const flow = typeof metadata.flow === "string" ? metadata.flow : "";
+  const activateStoreIntent = checkoutKind === "partner_closer" || flow === "partner_closer";
   const aggregateRef = db.collection("billing_daily").doc(formatDailyDocId(storeId));
+  const auditRef = db.collection("billing_audit").doc(eventId);
   await db.runTransaction(async (tx) => {
     const existing = await tx.get(eventRef);
     if (existing.exists) {
       return;
     }
+    const storeRef = db.doc(`stores/${storeId}`);
+    const storeSnap = await tx.get(storeRef);
+    const store = storeSnap.data() ?? {};
+    const storeStatus = typeof store.status === "string" ? store.status : "";
+    const expectedCheckoutSessionId =
+      typeof store.onboarding?.checkoutSessionId === "string" ? store.onboarding.checkoutSessionId : "";
+    const canActivateStore =
+      activateStoreIntent &&
+      checkoutSessionId.length > 0 &&
+      expectedCheckoutSessionId.length > 0 &&
+      checkoutSessionId === expectedCheckoutSessionId &&
+      storeStatus === "REVIEWING";
+
     tx.create(eventRef, {
       eventId,
       storeId,
@@ -131,18 +166,51 @@ async function persistCheckoutAggregate(event: StripeEvent): Promise<void> {
       },
       { merge: true }
     );
-    tx.set(db.doc(`stores/${storeId}`), createStoreActivationPatch(amountTotal), { merge: true });
+    tx.set(
+      auditRef,
+      {
+        eventId,
+        storeId,
+        checkoutKind,
+        flow,
+        checkoutSessionId,
+        expectedCheckoutSessionId,
+        storeStatus,
+        canActivateStore,
+        receivedAt: Date.now()
+      },
+      { merge: true }
+    );
+    tx.set(
+      storeRef,
+      canActivateStore ? createStoreActivationPatch(amountTotal) : createGuestCheckoutPatch(amountTotal),
+      { merge: true }
+    );
   });
 }
 
 export function createStoreActivationPatch(amountYen: number, nowMs = Date.now()): StoreActivationPatch {
   return {
     paymentStatus: "PAID",
+    status: "LIVE",
+    isPublic: true,
+    publishedAtMs: nowMs,
     activatedAtMs: nowMs,
     onboarding: {
       checkoutStatus: "COMPLETED",
       initialFeePaidYen: amountYen,
       initialFeePaidAtMs: nowMs
+    },
+    updatedAt: FieldValue.serverTimestamp()
+  };
+}
+
+function createGuestCheckoutPatch(amountYen: number, nowMs = Date.now()): StoreGuestCheckoutPatch {
+  return {
+    onboarding: {
+      guestCheckoutStatus: "COMPLETED",
+      guestCheckoutAmountYen: amountYen,
+      guestCheckoutAtMs: nowMs
     },
     updatedAt: FieldValue.serverTimestamp()
   };

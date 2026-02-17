@@ -118,6 +118,14 @@
           "function": "ownerInitialFeeCheckout"
         },
         {
+          "source": "/api/owner/partnerClosing",
+          "function": "ownerPartnerClosing"
+        },
+        {
+          "source": "/api/owner/geoBootstrap",
+          "function": "ownerGeoBootstrap"
+        },
+        {
           "source": "/api/owner/shopCardParse",
           "function": "ownerShopCardParse"
         },
@@ -241,6 +249,14 @@
         {
           "source": "/api/owner/initialFeeCheckout",
           "function": "ownerInitialFeeCheckout"
+        },
+        {
+          "source": "/api/owner/partnerClosing",
+          "function": "ownerPartnerClosing"
+        },
+        {
+          "source": "/api/owner/geoBootstrap",
+          "function": "ownerGeoBootstrap"
         },
         {
           "source": "/api/owner/shopCardParse",

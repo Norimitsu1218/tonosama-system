@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import ReviewDeck from "./components/ReviewDeck";
 
 type ItemAction = "approve" | "reject" | "soldout_toggle";
 type TelemetryRange = "today" | "yesterday" | "7d" | "30d";
@@ -48,6 +49,17 @@ type OwnerBillingResponse = {
   totals?: Omit<OwnerBillingDay, "date">;
 };
 
+type ReviewCard = {
+  id: string;
+  kind: "food" | "drink";
+  name: string;
+  price: number;
+  imageUrl: string;
+  approved: boolean;
+  okamiPitch: string;
+  pairingHint: string;
+};
+
 const OWNER_API_BASE = process.env.NEXT_PUBLIC_OWNER_API_BASE ?? "";
 const SUMIMASEN_RATE_THRESHOLD = 0.15;
 const BILLING_AVG_THRESHOLD = 180;
@@ -64,6 +76,17 @@ function createNonce(): string {
     return crypto.randomUUID().replace(/-/g, "");
   }
   return `${Date.now()}${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function normalizeId(input: string, fallback: string): string {
+  const base = input
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  if (base.length >= 3) {
+    return base.slice(0, 40);
+  }
+  return fallback;
 }
 
 export default function OwnerPage() {
@@ -90,6 +113,19 @@ export default function OwnerPage() {
   } | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
+  const [partnerId, setPartnerId] = useState("partner-demo");
+  const [closingStoreName, setClosingStoreName] = useState("");
+  const [closingAddress, setClosingAddress] = useState("");
+  const [closingPhone, setClosingPhone] = useState("");
+  const [closingSourceUrl, setClosingSourceUrl] = useState("");
+  const [closingBusy, setClosingBusy] = useState(false);
+  const [closingMessage, setClosingMessage] = useState<string | null>(null);
+  const [closingResult, setClosingResult] = useState<{ storeId: string; checkoutUrl: string } | null>(null);
+  const [geoLat, setGeoLat] = useState("35.6764");
+  const [geoLng, setGeoLng] = useState("139.6500");
+  const [geoBusy, setGeoBusy] = useState(false);
+  const [geoMessage, setGeoMessage] = useState<string | null>(null);
+  const [geoResult, setGeoResult] = useState<{ storeId: string; guestUrl: string; elapsedMs: number } | null>(null);
   const [sourceUrl, setSourceUrl] = useState("");
   const [supportsCashless, setSupportsCashless] = useState(true);
   const [hasWifi, setHasWifi] = useState(true);
@@ -113,8 +149,6 @@ export default function OwnerPage() {
   const [mapUrl, setMapUrl] = useState("");
   const [lpHeroImageUrl, setLpHeroImageUrl] = useState("");
   const [lpHeroVideoUrl, setLpHeroVideoUrl] = useState("");
-  const [liabilityAllergyAccepted, setLiabilityAllergyAccepted] = useState(false);
-  const [liabilityReligionAccepted, setLiabilityReligionAccepted] = useState(false);
   const [shopCardRawText, setShopCardRawText] = useState("");
   const [shopCardVisionBlocks, setShopCardVisionBlocks] = useState("shop logo\n鮨 とのさま\n東京都千代田区...\n03-1234-5678\nhttps://example.jp");
   const [storeQrUrl, setStoreQrUrl] = useState("");
@@ -149,6 +183,19 @@ export default function OwnerPage() {
       2
     )
   );
+  const [multiModalCollectionText, setMultiModalCollectionText] = useState(
+    JSON.stringify(
+      {
+        imageUrls: ["https://example.com/menu-page-1.jpg"],
+        videoUrls: ["https://example.com/store-walkthrough.mp4"],
+        audioUrls: ["https://example.com/owner-interview.m4a"],
+        ownerTranscript: "この店の魂は炭火と出汁。唐揚げにはメガハイボールを必ず提案。",
+        dataNotes: "客単価を上げたい。しっぽり客向けに地酒を優先表示。"
+      },
+      null,
+      2
+    )
+  );
   const [pairingOverridesText, setPairingOverridesText] = useState(
     JSON.stringify(
       {
@@ -170,6 +217,15 @@ export default function OwnerPage() {
     menuItems: number;
     drinks: number;
   } | null>(null);
+  const [reviewCards, setReviewCards] = useState<ReviewCard[]>([]);
+  const [reviewBusy, setReviewBusy] = useState(false);
+  const [reviewMessage, setReviewMessage] = useState<string | null>(null);
+  const [reviewQuery, setReviewQuery] = useState("");
+  const [reviewKindFilter, setReviewKindFilter] = useState<"ALL" | "food" | "drink">("ALL");
+  const [reviewApprovalFilter, setReviewApprovalFilter] = useState<"ALL" | "APPROVED" | "REJECTED">("ALL");
+  const [reviewPage, setReviewPage] = useState(1);
+  const [reviewPageSize, setReviewPageSize] = useState(24);
+  const [reviewViewMode, setReviewViewMode] = useState<"DECK" | "GRID">("DECK");
 
   const canSubmit = useMemo(() => {
     return storeId.trim().length > 0 && itemId.trim().length > 0 && ownerToken.trim().length > 0;
@@ -185,7 +241,6 @@ export default function OwnerPage() {
   const b2bChecklist = useMemo(() => {
     return [
       { key: "source", label: "source URL", ok: sourceUrl.trim().startsWith("https://") },
-      { key: "liability", label: "liability accepted", ok: liabilityAllergyAccepted && liabilityReligionAccepted },
       { key: "menu", label: "menu JSON", ok: menuImportText.includes("menuItems") },
       { key: "vision", label: "vision payload", ok: menuVisionText.includes("\"frames\"") && shopCardVisionBlocks.trim().length > 0 },
       { key: "pairing", label: "pairing overrides", ok: pairingOverridesText.includes("{") && pairingOverridesText.includes("}") },
@@ -196,8 +251,6 @@ export default function OwnerPage() {
   }, [
     antiSocialAccepted,
     contractAccepted,
-    liabilityAllergyAccepted,
-    liabilityReligionAccepted,
     menuImportText,
     menuVisionText,
     soulPairing,
@@ -216,6 +269,27 @@ export default function OwnerPage() {
       ratio: b2bChecklist.length === 0 ? 0 : okCount / b2bChecklist.length
     };
   }, [b2bChecklist]);
+
+  const demoStoreId = storeId.trim() || "demo-store";
+  const guestMockUrl = `https://apicius-6bcae.web.app/s/${encodeURIComponent(demoStoreId)}?mock=1&lang=ja`;
+  const guestLiveUrl = `https://apicius-6bcae.web.app/s/${encodeURIComponent(demoStoreId)}?lang=ja`;
+  const reviewFilteredCards = useMemo(() => {
+    const q = reviewQuery.trim().toLowerCase();
+    return reviewCards.filter((card) => {
+      const kindOk = reviewKindFilter === "ALL" || card.kind === reviewKindFilter;
+      const approvalOk =
+        reviewApprovalFilter === "ALL" ||
+        (reviewApprovalFilter === "APPROVED" ? card.approved : !card.approved);
+      const queryOk = q.length === 0 || card.name.toLowerCase().includes(q) || card.okamiPitch.toLowerCase().includes(q);
+      return kindOk && approvalOk && queryOk;
+    });
+  }, [reviewApprovalFilter, reviewCards, reviewKindFilter, reviewQuery]);
+  const reviewTotalPages = Math.max(1, Math.ceil(reviewFilteredCards.length / reviewPageSize));
+  const reviewCurrentPage = Math.min(reviewPage, reviewTotalPages);
+  const reviewPagedCards = useMemo(() => {
+    const start = (reviewCurrentPage - 1) * reviewPageSize;
+    return reviewFilteredCards.slice(start, start + reviewPageSize);
+  }, [reviewCurrentPage, reviewFilteredCards, reviewPageSize]);
 
   function ownerHeaders(): HeadersInit {
     return {
@@ -255,6 +329,87 @@ export default function OwnerPage() {
       setMessage({ ok: false, text: "操作失敗: network_error" });
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function startPartnerClosing() {
+    if (closingBusy || ownerToken.trim().length === 0 || partnerId.trim().length === 0 || closingStoreName.trim().length === 0) {
+      return;
+    }
+    setClosingBusy(true);
+    setClosingMessage(null);
+    setClosingResult(null);
+    try {
+      const res = await fetch(endpoint("/api/owner/partnerClosing"), {
+        method: "POST",
+        headers: ownerHeaders(),
+        body: JSON.stringify({
+          partnerId: partnerId.trim(),
+          storeName: closingStoreName.trim(),
+          sourceUrl: closingSourceUrl.trim() || undefined,
+          address: closingAddress.trim() || undefined,
+          phone: closingPhone.trim() || undefined,
+          intent: "partner_magic_show",
+          allowed_use: "sales_closing"
+        })
+      });
+      if (!res.ok) {
+        setClosingMessage(`Closer failed: ${res.status}`);
+        return;
+      }
+      const json = (await res.json()) as { storeId?: string; checkoutUrl?: string };
+      if (!json.storeId || !json.checkoutUrl) {
+        setClosingMessage("Closer failed: invalid_response");
+        return;
+      }
+      setStoreId(json.storeId);
+      setClosingResult({ storeId: json.storeId, checkoutUrl: json.checkoutUrl });
+      setClosingMessage("Magic moment ready. Open checkout URL now.");
+    } catch {
+      setClosingMessage("Closer failed: network_error");
+    } finally {
+      setClosingBusy(false);
+    }
+  }
+
+  async function startGeoBootstrap() {
+    const lat = Number(geoLat);
+    const lng = Number(geoLng);
+    if (geoBusy || ownerToken.trim().length === 0 || partnerId.trim().length === 0 || !Number.isFinite(lat) || !Number.isFinite(lng)) {
+      return;
+    }
+    setGeoBusy(true);
+    setGeoMessage(null);
+    setGeoResult(null);
+    try {
+      const res = await fetch(endpoint("/api/owner/geoBootstrap"), {
+        method: "POST",
+        headers: ownerHeaders(),
+        body: JSON.stringify({
+          partnerId: partnerId.trim(),
+          latitude: lat,
+          longitude: lng,
+          storeName: closingStoreName.trim() || undefined,
+          intent: "geo_instant_guest_site",
+          allowed_use: "sales_closing"
+        })
+      });
+      if (!res.ok) {
+        setGeoMessage(`Geo bootstrap failed: ${res.status}`);
+        return;
+      }
+      const json = (await res.json()) as { storeId?: string; guestUrl?: string; elapsedMs?: number };
+      if (!json.storeId || !json.guestUrl) {
+        setGeoMessage("Geo bootstrap failed: invalid_response");
+        return;
+      }
+      setStoreId(json.storeId);
+      setGeoResult({ storeId: json.storeId, guestUrl: json.guestUrl, elapsedMs: Number(json.elapsedMs ?? 0) });
+      setGeoMessage("Guest site generated from lat/lng.");
+    } catch {
+      setGeoMessage("Geo bootstrap failed: network_error");
+    } finally {
+      setGeoBusy(false);
     }
   }
 
@@ -328,7 +483,6 @@ export default function OwnerPage() {
       }
       const json = (await res.json()) as {
         paymentStatus?: string;
-        liabilityAccepted?: { allergy?: boolean; religion?: boolean };
         dataCollection?: {
           readinessScore?: number;
           missing?: string[];
@@ -349,9 +503,7 @@ export default function OwnerPage() {
           : null
       );
       setFoundationMessage(
-        `paymentStatus=${json.paymentStatus ?? "unknown"} / liability(allergy:${json.liabilityAccepted?.allergy === true ? "yes" : "no"}, religion:${
-          json.liabilityAccepted?.religion === true ? "yes" : "no"
-        })`
+        `paymentStatus=${json.paymentStatus ?? "unknown"}`
       );
     } catch {
       setFoundationMessage("Store status failed: network_error");
@@ -408,8 +560,6 @@ export default function OwnerPage() {
           mapUrl: mapUrl.trim() || undefined,
           lpHeroImageUrl: lpHeroImageUrl.trim() || undefined,
           lpHeroVideoUrl: lpHeroVideoUrl.trim() || undefined,
-          liabilityAllergyAccepted,
-          liabilityReligionAccepted,
           intent: "foundation_setup",
           allowed_use: "owner_runtime"
         })
@@ -509,6 +659,47 @@ export default function OwnerPage() {
       setFoundationMessage(res.ok ? "Vision menu imported" : `Vision menu import failed: ${res.status}`);
     } catch {
       setFoundationMessage("Vision menu import failed: invalid_json");
+    } finally {
+      setPipelineBusy(false);
+    }
+  }
+
+  async function importMultiModalCollection() {
+    if (!canRunPipeline || pipelineBusy) {
+      return;
+    }
+    setPipelineBusy(true);
+    setFoundationMessage(null);
+    try {
+      const parsed = JSON.parse(multiModalCollectionText) as {
+        imageUrls?: string[];
+        videoUrls?: string[];
+        audioUrls?: string[];
+        ownerTranscript?: string;
+        dataNotes?: string;
+      };
+      const imageUrls = [
+        ...(Array.isArray(parsed.imageUrls) ? parsed.imageUrls : []),
+        ...(Array.isArray(parsed.videoUrls) ? parsed.videoUrls : []),
+        ...(Array.isArray(parsed.audioUrls) ? parsed.audioUrls : [])
+      ].filter((url): url is string => typeof url === "string" && url.trim().length > 0);
+      const menuText = [parsed.ownerTranscript, parsed.dataNotes]
+        .filter((x): x is string => typeof x === "string" && x.trim().length > 0)
+        .join("\n");
+      const res = await fetch(endpoint("/api/owner/menuVisionImport"), {
+        method: "POST",
+        headers: ownerHeaders(),
+        body: JSON.stringify({
+          storeId: storeId.trim(),
+          imageUrls,
+          menuText,
+          intent: "multimodal_collection_import",
+          allowed_use: "owner_runtime"
+        })
+      });
+      setFoundationMessage(res.ok ? "Multimodal collection imported" : `Multimodal import failed: ${res.status}`);
+    } catch {
+      setFoundationMessage("Multimodal import failed: invalid_json");
     } finally {
       setPipelineBusy(false);
     }
@@ -988,8 +1179,367 @@ export default function OwnerPage() {
     await fetchCostStatus();
   }
 
+  useEffect(() => {
+    if (reviewPage > reviewTotalPages) {
+      setReviewPage(reviewTotalPages);
+    }
+  }, [reviewPage, reviewTotalPages]);
+
+  function buildReviewCardsFromVision() {
+    setReviewMessage(null);
+    try {
+      const parsed = JSON.parse(menuVisionText) as {
+        frames?: Array<{ kind?: unknown; name?: unknown; price?: unknown; notes?: unknown; imageUrl?: unknown }>;
+      };
+      const frames = Array.isArray(parsed.frames) ? parsed.frames : [];
+      const next = frames
+        .filter((row) => row && (row.kind === "food" || row.kind === "drink") && typeof row.name === "string")
+        .map((row, index) => {
+          const kind = row.kind as "food" | "drink";
+          const name = (row.name as string).trim();
+          const fallbackId = `${kind}-${index + 1}`;
+          const imageUrl =
+            typeof row.imageUrl === "string" && row.imageUrl.trim().length > 0
+              ? row.imageUrl
+              : `https://picsum.photos/seed/${encodeURIComponent(`${storeId}-${fallbackId}-${name}`)}/480/320`;
+          const price = typeof row.price === "number" && Number.isFinite(row.price) ? row.price : kind === "drink" ? 700 : 1200;
+          return {
+            id: normalizeId(name, fallbackId),
+            kind,
+            name,
+            price,
+            imageUrl,
+            approved: true,
+            okamiPitch: typeof row.notes === "string" && row.notes.trim().length > 0 ? row.notes : "店主の魂と差別化ポイントを含む提案文",
+            pairingHint: kind === "food" ? "地酒 辛口 / ハイボール メガ" : "食中酒として提案"
+          } satisfies ReviewCard;
+        });
+      if (next.length === 0) {
+        setReviewCards([]);
+        setReviewPage(1);
+        setReviewMessage("Vision JSON から検閲カードを生成できませんでした。");
+        return;
+      }
+      setReviewCards(next);
+      setReviewPage(1);
+      setReviewMessage(`検閲カードを生成しました: ${next.length}件`);
+    } catch {
+      setReviewCards([]);
+      setReviewPage(1);
+      setReviewMessage("Vision JSON が不正です。");
+    }
+  }
+
+  function toggleReviewCard(id: string) {
+    setReviewCards((prev) => prev.map((card) => (card.id === id ? { ...card, approved: !card.approved } : card)));
+  }
+
+  function setApprovalOnFiltered(approved: boolean) {
+    const ids = new Set(reviewFilteredCards.map((card) => card.id));
+    setReviewCards((prev) => prev.map((card) => (ids.has(card.id) ? { ...card, approved } : card)));
+  }
+
+  async function publishApprovedCards() {
+    if (!canRunPipeline || reviewBusy) {
+      return;
+    }
+    const approved = reviewCards.filter((card) => card.approved);
+    if (approved.length === 0) {
+      setReviewMessage("承認済みカードが0件です。");
+      return;
+    }
+    setReviewBusy(true);
+    setReviewMessage(null);
+    try {
+      const frames = approved.map((card) => ({
+        kind: card.kind,
+        name: card.name,
+        price: card.price,
+        tags: [card.kind === "food" ? "HUNGRY" : "RELAX"],
+        notes: card.okamiPitch
+      }));
+      const menuRes = await fetch(endpoint("/api/owner/menuVisionImport"), {
+        method: "POST",
+        headers: ownerHeaders(),
+        body: JSON.stringify({
+          storeId: storeId.trim(),
+          frames,
+          intent: "mirror_card_review_approved",
+          allowed_use: "owner_runtime"
+        })
+      });
+      if (!menuRes.ok) {
+        setReviewMessage(`検閲反映失敗(menu): ${menuRes.status}`);
+        return;
+      }
+
+      const approvedFoods = approved.filter((card) => card.kind === "food");
+      const approvedDrinks = approved.filter((card) => card.kind === "drink");
+      if (approvedFoods.length > 0 && approvedDrinks.length > 0) {
+        const topDrinkIds = approvedDrinks.slice(0, 3).map((drink) => drink.id);
+        const pairings = Object.fromEntries(approvedFoods.map((food) => [food.id, topDrinkIds]));
+        const pairingRes = await fetch(endpoint("/api/owner/pairingOverrides"), {
+          method: "POST",
+          headers: ownerHeaders(),
+          body: JSON.stringify({
+            storeId: storeId.trim(),
+            pairings,
+            intent: "mirror_pairing_approved",
+            allowed_use: "owner_runtime"
+          })
+        });
+        if (!pairingRes.ok) {
+          setReviewMessage(`検閲反映失敗(pairing): ${pairingRes.status}`);
+          return;
+        }
+      }
+
+      const crystallizeRes = await fetch(endpoint("/api/owner/crystallize"), {
+        method: "POST",
+        headers: ownerHeaders(),
+        body: JSON.stringify({
+          storeId: storeId.trim(),
+          intent: "mirror_publish_after_approval",
+          allowed_use: "owner_runtime"
+        })
+      });
+      if (!crystallizeRes.ok) {
+        setReviewMessage(`公開失敗(crystallize): ${crystallizeRes.status}`);
+        return;
+      }
+      setReviewMessage(`承認済み ${approved.length}件を公開しました。Guest: ${guestLiveUrl}`);
+    } catch {
+      setReviewMessage("公開失敗: network_error");
+    } finally {
+      setReviewBusy(false);
+    }
+  }
+
   return (
     <main>
+      <section className="panel demo-board">
+        <h1>Owner Sample Guide</h1>
+        <p>最短で確認する順番: 1) 店主データ投入 2) ゲスト導線確認 3) テレメトリ確認</p>
+        <ol className="demo-steps">
+          <li>1. Foundation Pipeline で `Quick B2B Flow` を実行</li>
+          <li>2. `Get Permanent URL` で店ID導線を確定</li>
+          <li>3. Guest URL を開いて `Awakening → Mood → Discovery` を確認</li>
+        </ol>
+        <div className="demo-links">
+          <p className="small">
+            Owner URL: <a href="https://apicius-owner.web.app">https://apicius-owner.web.app</a>
+          </p>
+          <p className="small">
+            Guest Mock URL: <a href={guestMockUrl}>{guestMockUrl}</a>
+          </p>
+          <p className="small">
+            Guest Live URL: <a href={guestLiveUrl}>{guestLiveUrl}</a>
+          </p>
+        </div>
+      </section>
+
+      <section className="panel">
+        <h2>The Closer (Sales Partner)</h2>
+        <p>代理店の対面実演用: DEMO店舗を即時作成し、49,800円決済リンクをその場で発行します。</p>
+        <div className="row">
+          <label htmlFor="partner-id">partnerId</label>
+          <input id="partner-id" value={partnerId} onChange={(e) => setPartnerId(e.target.value)} placeholder="partner-demo" />
+        </div>
+        <div className="row">
+          <label htmlFor="closing-store-name">store name</label>
+          <input
+            id="closing-store-name"
+            value={closingStoreName}
+            onChange={(e) => setClosingStoreName(e.target.value)}
+            placeholder="IZAKAYA ZEN"
+          />
+        </div>
+        <div className="row">
+          <label htmlFor="closing-source-url">source URL (optional)</label>
+          <input
+            id="closing-source-url"
+            value={closingSourceUrl}
+            onChange={(e) => setClosingSourceUrl(e.target.value)}
+            placeholder="https://official-site.example"
+          />
+        </div>
+        <div className="row">
+          <label htmlFor="closing-address">address (optional)</label>
+          <input id="closing-address" value={closingAddress} onChange={(e) => setClosingAddress(e.target.value)} placeholder="東京都..." />
+        </div>
+        <div className="row">
+          <label htmlFor="closing-phone">phone (optional)</label>
+          <input id="closing-phone" value={closingPhone} onChange={(e) => setClosingPhone(e.target.value)} placeholder="03-1234-5678" />
+        </div>
+        <div className="actions">
+          <button type="button" onClick={() => void startPartnerClosing()} disabled={closingBusy || ownerToken.trim().length === 0}>
+            {closingBusy ? "Generating..." : "Start Magic Show + Checkout"}
+          </button>
+        </div>
+        <div className="row">
+          <label htmlFor="geo-lat">latitude</label>
+          <input id="geo-lat" value={geoLat} onChange={(e) => setGeoLat(e.target.value)} placeholder="35.6764" />
+        </div>
+        <div className="row">
+          <label htmlFor="geo-lng">longitude</label>
+          <input id="geo-lng" value={geoLng} onChange={(e) => setGeoLng(e.target.value)} placeholder="139.6500" />
+        </div>
+        <div className="actions">
+          <button type="button" onClick={() => void startGeoBootstrap()} disabled={geoBusy || ownerToken.trim().length === 0}>
+            {geoBusy ? "Bootstrapping..." : "Generate Guest Site in ~10s"}
+          </button>
+        </div>
+        {closingMessage ? <p className="small">{closingMessage}</p> : null}
+        {closingResult ? (
+          <p className="small">
+            DEMO store: <strong>{closingResult.storeId}</strong> / Checkout:{" "}
+            <a href={closingResult.checkoutUrl} target="_blank" rel="noreferrer">
+              open payment link
+            </a>
+          </p>
+        ) : null}
+        {geoMessage ? <p className="small">{geoMessage}</p> : null}
+        {geoResult ? (
+          <p className="small">
+            Guest site: <strong>{geoResult.storeId}</strong> ({geoResult.elapsedMs}ms) /{" "}
+            <a href={geoResult.guestUrl} target="_blank" rel="noreferrer">
+              open guest URL
+            </a>
+          </p>
+        ) : null}
+      </section>
+
+      <section className="panel">
+        <h2>Mirror Review (Coin Side)</h2>
+        <p>画像/動画/音声から作った単品カードを、ゲスト表示と同じ粒度で検閲して承認します。</p>
+        <div className="actions">
+          <button type="button" onClick={buildReviewCardsFromVision} disabled={!canRunPipeline || reviewBusy}>
+            Build Review Cards
+          </button>
+          <button type="button" onClick={() => void publishApprovedCards()} disabled={!canRunPipeline || reviewBusy}>
+            {reviewBusy ? "Publishing..." : "Approve + Publish Now"}
+          </button>
+        </div>
+        <div className="row">
+          <label htmlFor="review-query">search (name/pitch)</label>
+          <input
+            id="review-query"
+            value={reviewQuery}
+            onChange={(e) => {
+              setReviewQuery(e.target.value);
+              setReviewPage(1);
+            }}
+            placeholder="焼き鳥 / pairing / soul..."
+          />
+        </div>
+        <div className="row">
+          <label htmlFor="review-kind">kind filter</label>
+          <select
+            id="review-kind"
+            value={reviewKindFilter}
+            onChange={(e) => {
+              setReviewKindFilter(e.target.value as "ALL" | "food" | "drink");
+              setReviewPage(1);
+            }}
+          >
+            <option value="ALL">ALL</option>
+            <option value="food">food</option>
+            <option value="drink">drink</option>
+          </select>
+        </div>
+        <div className="row">
+          <label htmlFor="review-approval">approval filter</label>
+          <select
+            id="review-approval"
+            value={reviewApprovalFilter}
+            onChange={(e) => {
+              setReviewApprovalFilter(e.target.value as "ALL" | "APPROVED" | "REJECTED");
+              setReviewPage(1);
+            }}
+          >
+            <option value="ALL">ALL</option>
+            <option value="APPROVED">approved only</option>
+            <option value="REJECTED">rejected only</option>
+          </select>
+        </div>
+        <div className="row">
+          <label htmlFor="review-page-size">page size</label>
+          <select
+            id="review-page-size"
+            value={String(reviewPageSize)}
+            onChange={(e) => {
+              setReviewPageSize(Number(e.target.value));
+              setReviewPage(1);
+            }}
+          >
+            <option value="12">12</option>
+            <option value="24">24</option>
+            <option value="36">36</option>
+            <option value="48">48</option>
+          </select>
+        </div>
+        <div className="actions">
+          <button type="button" onClick={() => setApprovalOnFiltered(true)} disabled={reviewBusy || reviewFilteredCards.length === 0}>
+            Approve Filtered
+          </button>
+          <button type="button" onClick={() => setApprovalOnFiltered(false)} disabled={reviewBusy || reviewFilteredCards.length === 0}>
+            Reject Filtered
+          </button>
+          <button type="button" onClick={() => setReviewViewMode((m) => (m === "DECK" ? "GRID" : "DECK"))}>
+            View: {reviewViewMode}
+          </button>
+        </div>
+        <p className="small">
+          SKU total: {reviewCards.length} / filtered: {reviewFilteredCards.length} / approved:{" "}
+          {reviewCards.filter((x) => x.approved).length} / page {reviewCurrentPage}/{reviewTotalPages}
+        </p>
+        {reviewViewMode === "DECK" ? (
+          <ReviewDeck
+            cards={reviewFilteredCards}
+            onApprove={(id) => {
+              setReviewCards((prev) => prev.map((card) => (card.id === id ? { ...card, approved: true } : card)));
+            }}
+            onReject={(id) => {
+              setReviewCards((prev) => prev.map((card) => (card.id === id ? { ...card, approved: false } : card)));
+            }}
+          />
+        ) : (
+          <div className="review-grid">
+            {reviewPagedCards.map((card) => (
+              <article key={card.id} className={`review-card ${card.approved ? "is-approved" : "is-rejected"}`}>
+                <img src={card.imageUrl} alt={card.name} />
+                <div className="review-body">
+                  <p className="small">{card.kind.toUpperCase()}</p>
+                  <h3>{card.name}</h3>
+                  <p className="small">¥{card.price}</p>
+                  <p className="small">{card.okamiPitch}</p>
+                  {card.kind === "food" ? <p className="small">Pairing: {card.pairingHint}</p> : null}
+                  <label className="checkline">
+                    <input type="checkbox" checked={card.approved} onChange={() => toggleReviewCard(card.id)} />
+                    <span>{card.approved ? "Approved" : "Rejected"}</span>
+                  </label>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+        {reviewViewMode === "GRID" ? (
+          <div className="pagination">
+            <button type="button" onClick={() => setReviewPage((p) => Math.max(1, p - 1))} disabled={reviewCurrentPage <= 1}>
+              Prev
+            </button>
+            <button
+              type="button"
+              onClick={() => setReviewPage((p) => Math.min(reviewTotalPages, p + 1))}
+              disabled={reviewCurrentPage >= reviewTotalPages}
+            >
+              Next
+            </button>
+          </div>
+        ) : null}
+        {reviewMessage ? <p className="status">{reviewMessage}</p> : null}
+      </section>
+
       <section className="panel">
         <h1>Owner Controls</h1>
         <p>承認 / 差戻し / sold out をFunctions経由で実行します。</p>
@@ -1120,25 +1670,6 @@ export default function OwnerPage() {
           />
         </div>
         <div className="actions">
-          <label>
-            <input
-              type="checkbox"
-              checked={liabilityAllergyAccepted}
-              onChange={(e) => setLiabilityAllergyAccepted(e.target.checked)}
-            />
-            Allergy liability accepted
-          </label>
-          <label>
-            <input
-              type="checkbox"
-              checked={liabilityReligionAccepted}
-              onChange={(e) => setLiabilityReligionAccepted(e.target.checked)}
-            />
-            Religion liability accepted
-          </label>
-        </div>
-
-        <div className="actions">
           <button type="button" onClick={() => void fetchStoreStatus()} disabled={!canRunPipeline || pipelineBusy}>
             Store Status
           </button>
@@ -1203,12 +1734,24 @@ export default function OwnerPage() {
           <button type="button" onClick={() => void importMenu()} disabled={!canRunPipeline || pipelineBusy}>
             Menu Import
           </button>
+          <button type="button" onClick={() => void importMultiModalCollection()} disabled={!canRunPipeline || pipelineBusy}>
+            Multimodal Import
+          </button>
           <button type="button" onClick={() => void importMenuVision()} disabled={!canRunPipeline || pipelineBusy}>
             Vision Menu Import
           </button>
           <button type="button" onClick={() => void importPairingOverrides()} disabled={!canRunPipeline || pipelineBusy}>
             Pairing Override
           </button>
+        </div>
+        <div className="row">
+          <label htmlFor="multimodal-collection">multimodal collection JSON (image/video/audio/data)</label>
+          <textarea
+            id="multimodal-collection"
+            value={multiModalCollectionText}
+            onChange={(e) => setMultiModalCollectionText(e.target.value)}
+            rows={10}
+          />
         </div>
         <div className="row">
           <label htmlFor="menu-vision">vision frames JSON (multimodal output)</label>

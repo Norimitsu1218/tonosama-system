@@ -2,6 +2,8 @@ import { onRequest } from "firebase-functions/v2/https";
 import { createHash } from "node:crypto";
 import { getApps, initializeApp } from "firebase-admin/app";
 import { FieldValue, getFirestore } from "firebase-admin/firestore";
+import { genkit, z as genkitZ } from "genkit";
+import { googleAI } from "@genkit-ai/googleai";
 import { appendApprovalLogEntry } from "./auditHash";
 import { verifyOwnerRequest } from "./ownerAuth";
 import { getOwnerClientHash, isOwnerRateLimited } from "./ownerRateLimit";
@@ -27,10 +29,46 @@ if (getApps().length === 0) {
 }
 
 const BLOCKED_DOMAINS = ["tabelog.com", "retty.me", "hotpepper.jp", "gurunavi.com", "yelp.com"];
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY;
+const ai = GEMINI_API_KEY
+  ? genkit({
+      plugins: [googleAI({ apiKey: GEMINI_API_KEY })],
+      model: googleAI.model("gemini-2.5-pro")
+    })
+  : null;
+
+const SoulVectorSchema = genkitZ.object({
+  philosophy: genkitZ.string(),
+  hungryFast: genkitZ.string(),
+  hungryVolume: genkitZ.string(),
+  adventureIngredient: genkitZ.string(),
+  salesPitchDrink: genkitZ.string(),
+  pairingPitch: genkitZ.string(),
+  report18s: genkitZ.string(),
+  translationSeeds: genkitZ.object({
+    ja: genkitZ.string(),
+    en: genkitZ.string(),
+    fr: genkitZ.string(),
+    zh: genkitZ.string()
+  })
+});
+
+const VisionCatalogSchema = genkitZ.object({
+  frames: genkitZ.array(
+    genkitZ.object({
+      kind: genkitZ.enum(["food", "drink"]),
+      name: genkitZ.string(),
+      price: genkitZ.number().optional(),
+      tags: genkitZ.array(genkitZ.string()).optional(),
+      notes: genkitZ.string().optional()
+    })
+  )
+});
+
 const OWNER_ACTION_COST_YEN: Record<string, number> = {
   foundation_update: 1,
-  menu_import: 3,
-  soul_capture: 2,
+  menu_import: 30,
+  soul_capture: 20,
   crystallize: 5,
   sales_diagnosis: 1,
   business_model_select: 1,
@@ -38,8 +76,93 @@ const OWNER_ACTION_COST_YEN: Record<string, number> = {
   activate_account: 1,
   shop_card_import: 1,
   trends_publish: 1,
-  initial_fee_checkout: 1
+  initial_fee_checkout: 1,
+  partner_closing: 1,
+  geo_bootstrap: 1
 };
+
+async function generateSoulVector(input: {
+  storeId: string;
+  philosophyHint: string;
+  transcript?: string;
+  menuText?: string;
+}): Promise<genkitZ.infer<typeof SoulVectorSchema> | null> {
+  if (!ai) {
+    return null;
+  }
+  const prompt = [
+    "You are TONOSAMA onboarding AI for Japanese restaurants.",
+    "Create a high-conviction soul vector for sales demo. Keep Japanese natural.",
+    "Need fields: philosophy, hungryFast, hungryVolume, adventureIngredient, salesPitchDrink, pairingPitch, report18s.",
+    "Also produce translationSeeds for ja/en/fr/zh in one sentence each.",
+    "Input context:",
+    JSON.stringify(input)
+  ].join("\n");
+  try {
+    const response = await ai.generate({
+      prompt,
+      output: { schema: SoulVectorSchema },
+      config: { temperature: 0.55, maxOutputTokens: 900 }
+    });
+    return response.output ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function generateVisionFrames(input: { imageUrls?: string[]; menuText?: string }): Promise<VisionFrameInput[] | null> {
+  if (!ai) {
+    return null;
+  }
+  const prompt = [
+    "You are TONOSAMA multimodal parser.",
+    "From image urls and menu text, infer at least 4 menu/drink frames.",
+    "Each frame must include kind, name, optional price, tags, notes.",
+    "Tags should include mood hints and serving style hints.",
+    "Input:",
+    JSON.stringify(input)
+  ].join("\n");
+  try {
+    const response = await ai.generate({
+      prompt,
+      output: { schema: VisionCatalogSchema },
+      config: { temperature: 0.35, maxOutputTokens: 1000 }
+    });
+    const frames = response.output?.frames ?? [];
+    return frames.length > 0 ? frames : null;
+  } catch {
+    return null;
+  }
+}
+
+const TranslationSeedSchema = genkitZ.object({
+  ja: genkitZ.array(genkitZ.string()),
+  en: genkitZ.array(genkitZ.string()),
+  fr: genkitZ.array(genkitZ.string()),
+  zh: genkitZ.array(genkitZ.string())
+});
+
+async function generateTranslationSeed(input: { philosophy: string; menuItems: string[] }): Promise<genkitZ.infer<typeof TranslationSeedSchema> | null> {
+  if (!ai) {
+    return null;
+  }
+  const prompt = [
+    "Create concise translation seed phrases for restaurant menu onboarding.",
+    "Return arrays for ja,en,fr,zh with same length as menuItems.",
+    "Focus on appetite and pairing cues, not literal dictionary style.",
+    JSON.stringify(input)
+  ].join("\n");
+  try {
+    const response = await ai.generate({
+      prompt,
+      output: { schema: TranslationSeedSchema },
+      config: { temperature: 0.4, maxOutputTokens: 800 }
+    });
+    return response.output ?? null;
+  } catch {
+    return null;
+  }
+}
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -79,6 +202,55 @@ export function extractWebsiteFromText(rawText: string): string | null {
     return null;
   }
   return parsed.toString();
+}
+
+function toFormBody(params: Record<string, string>): string {
+  const search = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    search.append(k, v);
+  }
+  return search.toString();
+}
+
+async function createStripeCloserCheckoutSession(args: {
+  secretKey: string;
+  successUrl: string;
+  cancelUrl: string;
+  storeId: string;
+  partnerId: string;
+  idempotencyKey: string;
+}): Promise<{ id: string; url: string } | null> {
+  const payload = toFormBody({
+    mode: "payment",
+    success_url: `${args.successUrl}?session_id={CHECKOUT_SESSION_ID}&store_id=${args.storeId}`,
+    cancel_url: `${args.cancelUrl}?store_id=${args.storeId}`,
+    "line_items[0][price_data][currency]": "jpy",
+    "line_items[0][price_data][unit_amount]": "49800",
+    "line_items[0][price_data][product_data][name]": "TONOSAMA System Activation",
+    "line_items[0][price_data][product_data][description]": `Store ${args.storeId} activation by partner ${args.partnerId}`,
+    "line_items[0][quantity]": "1",
+    "metadata[storeId]": args.storeId,
+    "metadata[partnerId]": args.partnerId,
+    "metadata[flow]": "partner_closer",
+    "metadata[checkoutKind]": "partner_closer"
+  });
+  const response = await fetch("https://api.stripe.com/v1/checkout/sessions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${args.secretKey}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+      "Idempotency-Key": args.idempotencyKey
+    },
+    body: payload
+  });
+  if (!response.ok) {
+    return null;
+  }
+  const json = (await response.json()) as { id?: string; url?: string };
+  if (typeof json.id !== "string" || typeof json.url !== "string") {
+    return null;
+  }
+  return { id: json.id, url: json.url };
 }
 
 function pickMoodTags(name: string, current: string[] = []): string[] {
@@ -217,7 +389,9 @@ function convertVisionFramesToCatalog(
 function parseVisionImportBody(raw: unknown):
   | {
       storeId: string;
-      frames: VisionFrameInput[];
+      frames?: VisionFrameInput[];
+      imageUrls?: string[];
+      menuText?: string;
       intent: string;
       allowed_use: string;
     }
@@ -236,12 +410,18 @@ function parseVisionImportBody(raw: unknown):
     return null;
   }
   const frames = normalizeVisionFrames(raw.frames);
-  if (!frames || frames.length < 3) {
+  const imageUrls = Array.isArray(raw.imageUrls)
+    ? raw.imageUrls.filter((x): x is string => typeof x === "string" && x.startsWith("https://")).slice(0, 12)
+    : [];
+  const menuText = typeof raw.menuText === "string" ? raw.menuText.trim() : undefined;
+  if ((!frames || frames.length < 3) && imageUrls.length === 0 && !menuText) {
     return null;
   }
   return {
     storeId: raw.storeId,
-    frames,
+    frames: frames ?? undefined,
+    imageUrls: imageUrls.length > 0 ? imageUrls : undefined,
+    menuText,
     intent: raw.intent.trim(),
     allowed_use: raw.allowed_use.trim()
   };
@@ -305,10 +485,6 @@ function parseRulesBody(raw: unknown):
       mapUrl?: URL;
       lpHeroImageUrl?: URL;
       lpHeroVideoUrl?: URL;
-      liabilityAccepted: {
-        allergy: boolean;
-        religion: boolean;
-      };
       intent: string;
       allowed_use: string;
     }
@@ -324,8 +500,6 @@ function parseRulesBody(raw: unknown):
     typeof raw.supportsCashless !== "boolean" ||
     typeof raw.hasWifi !== "boolean" ||
     typeof raw.hasOtoshi !== "boolean" ||
-    raw.liabilityAllergyAccepted !== true ||
-    raw.liabilityReligionAccepted !== true ||
     typeof raw.intent !== "string" ||
     raw.intent.trim().length === 0 ||
     typeof raw.allowed_use !== "string" ||
@@ -342,10 +516,6 @@ function parseRulesBody(raw: unknown):
     mapUrl: parseSourceUrl(raw.mapUrl) ?? undefined,
     lpHeroImageUrl: parseSourceUrl(raw.lpHeroImageUrl) ?? undefined,
     lpHeroVideoUrl: parseSourceUrl(raw.lpHeroVideoUrl) ?? undefined,
-    liabilityAccepted: {
-      allergy: raw.liabilityAllergyAccepted === true,
-      religion: raw.liabilityReligionAccepted === true
-    },
     intent: raw.intent.trim(),
     allowed_use: raw.allowed_use.trim()
   };
@@ -410,7 +580,11 @@ function parseMenuImportBody(raw: unknown):
 function parseSoulBody(raw: unknown):
   | {
       storeId: string;
-      philosophy: string;
+      philosophy?: string;
+      autoInterview?: {
+        transcript?: string;
+        menuText?: string;
+      };
       hungryFast?: string;
       hungryVolume?: string;
       adventureIngredient?: string;
@@ -425,8 +599,6 @@ function parseSoulBody(raw: unknown):
   if (
     typeof raw.storeId !== "string" ||
     !isValidId(raw.storeId) ||
-    typeof raw.philosophy !== "string" ||
-    raw.philosophy.trim().length === 0 ||
     typeof raw.intent !== "string" ||
     raw.intent.trim().length === 0 ||
     typeof raw.allowed_use !== "string" ||
@@ -434,9 +606,17 @@ function parseSoulBody(raw: unknown):
   ) {
     return null;
   }
+  const philosophy = typeof raw.philosophy === "string" ? raw.philosophy.trim() : "";
+  const transcript = typeof raw.ownerInterviewTranscript === "string" ? raw.ownerInterviewTranscript.trim() : "";
+  const menuText = typeof raw.menuText === "string" ? raw.menuText.trim() : "";
+  const hasAutoInterview = transcript.length > 0 || menuText.length > 0 || raw.autoInterview === true;
+  if (philosophy.length === 0 && !hasAutoInterview) {
+    return null;
+  }
   return {
     storeId: raw.storeId,
-    philosophy: raw.philosophy.trim(),
+    philosophy: philosophy.length > 0 ? philosophy : undefined,
+    autoInterview: hasAutoInterview ? { transcript: transcript || undefined, menuText: menuText || undefined } : undefined,
     hungryFast: typeof raw.hungryFast === "string" ? raw.hungryFast.trim() : undefined,
     hungryVolume: typeof raw.hungryVolume === "string" ? raw.hungryVolume.trim() : undefined,
     adventureIngredient: typeof raw.adventureIngredient === "string" ? raw.adventureIngredient.trim() : undefined,
@@ -495,6 +675,93 @@ function parseShopCardVisionBody(raw: unknown):
   };
 }
 
+function parsePartnerClosingBody(raw: unknown):
+  | {
+      partnerId: string;
+      storeName: string;
+      sourceUrl?: URL;
+      address?: string;
+      phone?: string;
+      intent: string;
+      allowed_use: string;
+    }
+  | null {
+  if (!isObject(raw)) {
+    return null;
+  }
+  if (
+    typeof raw.partnerId !== "string" ||
+    !isValidId(raw.partnerId) ||
+    typeof raw.storeName !== "string" ||
+    raw.storeName.trim().length < 2 ||
+    typeof raw.intent !== "string" ||
+    raw.intent.trim().length === 0 ||
+    typeof raw.allowed_use !== "string" ||
+    raw.allowed_use.trim().length === 0
+  ) {
+    return null;
+  }
+  return {
+    partnerId: raw.partnerId.trim(),
+    storeName: raw.storeName.trim(),
+    sourceUrl: parseSourceUrl(raw.sourceUrl) ?? undefined,
+    address: typeof raw.address === "string" ? raw.address.trim() : undefined,
+    phone: typeof raw.phone === "string" ? raw.phone.trim() : undefined,
+    intent: raw.intent.trim(),
+    allowed_use: raw.allowed_use.trim()
+  };
+}
+
+function parseGeoBootstrapBody(raw: unknown):
+  | {
+      partnerId: string;
+      latitude: number;
+      longitude: number;
+      storeName?: string;
+      intent: string;
+      allowed_use: string;
+    }
+  | null {
+  if (!isObject(raw)) {
+    return null;
+  }
+  if (
+    typeof raw.partnerId !== "string" ||
+    !isValidId(raw.partnerId) ||
+    typeof raw.latitude !== "number" ||
+    !Number.isFinite(raw.latitude) ||
+    typeof raw.longitude !== "number" ||
+    !Number.isFinite(raw.longitude) ||
+    typeof raw.intent !== "string" ||
+    raw.intent.trim().length === 0 ||
+    typeof raw.allowed_use !== "string" ||
+    raw.allowed_use.trim().length === 0
+  ) {
+    return null;
+  }
+  return {
+    partnerId: raw.partnerId.trim(),
+    latitude: raw.latitude,
+    longitude: raw.longitude,
+    storeName: typeof raw.storeName === "string" && raw.storeName.trim().length > 0 ? raw.storeName.trim() : undefined,
+    intent: raw.intent.trim(),
+    allowed_use: raw.allowed_use.trim()
+  };
+}
+
+function fallbackVisionFramesFromGeo(args: { latitude: number; longitude: number }): VisionFrameInput[] {
+  const latTag = args.latitude >= 35 ? "north" : "south";
+  const lngTag = args.longitude >= 135 ? "east" : "west";
+  return [
+    { kind: "food", name: "旬魚の刺身盛り", price: 1380, tags: ["RELAX", `geo:${latTag}_${lngTag}`], notes: "fresh fish plate" },
+    { kind: "food", name: "炭火焼き鶏", price: 880, tags: ["HUNGRY"], notes: "charcoal grilled chicken" },
+    { kind: "food", name: "季節野菜のおひたし", price: 620, tags: ["RELAX"], notes: "light starter" },
+    { kind: "food", name: "珍味三点盛り", price: 980, tags: ["ADVENTURE"], notes: "adventure plate" },
+    { kind: "drink", name: "地酒 辛口", price: 780, tags: ["RELAX"], notes: "dry sake" },
+    { kind: "drink", name: "ハイボール メガ", price: 690, tags: ["HUNGRY"], notes: "highball mega" }
+  ];
+}
+
 async function authorizeOwner(req: any, storeId: string) {
   const auth = await verifyOwnerRequest(req, storeId);
   if (!auth.ok) {
@@ -541,10 +808,7 @@ export const ownerStoreStatus = onRequest({ cors: true }, async (req, res) => {
   if (!store.businessRules) readinessMissing.push("business_rules");
   if (!store.soulVoice) readinessMissing.push("soul_voice");
   if (menuCount < 3) readinessMissing.push("menu_items_min3");
-  if (store.liabilityAccepted?.allergy !== true || store.liabilityAccepted?.religion !== true) {
-    readinessMissing.push("liability_acceptance");
-  }
-  const readinessTotal = 5;
+  const readinessTotal = 4;
   const readinessScore = Math.max(0, Math.min(1, (readinessTotal - readinessMissing.length) / readinessTotal));
   const paymentStatus = await readPaymentStatus(storeId);
   res.status(200).json({
@@ -557,10 +821,6 @@ export const ownerStoreStatus = onRequest({ cors: true }, async (req, res) => {
       missing: readinessMissing,
       menuItems: menuCount,
       drinks: drinksCount
-    },
-    liabilityAccepted: {
-      allergy: store.liabilityAccepted?.allergy === true,
-      religion: store.liabilityAccepted?.religion === true
     }
   });
 });
@@ -639,10 +899,6 @@ export const ownerBusinessRules = onRequest({ cors: true }, async (req, res) => 
           supportsCashless: parsed.supportsCashless,
           hasWifi: parsed.hasWifi,
           hasOtoshi: parsed.hasOtoshi
-        },
-        liabilityAccepted: {
-          allergy: parsed.liabilityAccepted.allergy,
-          religion: parsed.liabilityAccepted.religion
         },
         mapUrl: parsed.mapUrl?.toString() ?? null,
         lpHeroImageUrl: parsed.lpHeroImageUrl?.toString() ?? null,
@@ -728,7 +984,12 @@ export const ownerMenuVisionImport = onRequest({ cors: true }, async (req, res) 
     return;
   }
 
-  const catalog = convertVisionFramesToCatalog(parsed.frames);
+  const inferredFrames = parsed.frames ?? (await generateVisionFrames({ imageUrls: parsed.imageUrls, menuText: parsed.menuText }));
+  if (!inferredFrames || inferredFrames.length < 3) {
+    res.status(400).json({ error: "vision_frames_missing" });
+    return;
+  }
+  const catalog = convertVisionFramesToCatalog(inferredFrames);
   if (catalog.menuItems.length < 3) {
     res.status(400).json({ error: "menu_too_small" });
     return;
@@ -739,15 +1000,20 @@ export const ownerMenuVisionImport = onRequest({ cors: true }, async (req, res) 
   batch.set(getFirestore().doc(`drinks/${parsed.storeId}`), { items: catalog.drinks }, { merge: true });
   batch.set(
     getFirestore().doc(`stores/${parsed.storeId}`),
-    {
-      visionImport: {
-        frameCount: parsed.frames.length,
-        importedAtMs: Date.now()
+      {
+        visionImport: {
+          frameCount: inferredFrames.length,
+          sourceImageCount: parsed.imageUrls?.length ?? 0,
+          importedAtMs: Date.now()
+        },
+        semanticCore: {
+          languageSeedReady: true,
+          generatedBy: "gemini"
+        },
+        updatedAt: FieldValue.serverTimestamp(),
+        importedAt: FieldValue.serverTimestamp()
       },
-      updatedAt: FieldValue.serverTimestamp(),
-      importedAt: FieldValue.serverTimestamp()
-    },
-    { merge: true }
+      { merge: true }
   );
   await batch.commit();
   await recordOwnerCost(parsed.storeId, "menu_import");
@@ -756,7 +1022,7 @@ export const ownerMenuVisionImport = onRequest({ cors: true }, async (req, res) 
     actor: "owner",
     action: "menu_import",
     storeId: parsed.storeId,
-    reason: `vision_frames:${parsed.frames.length},menu:${catalog.menuItems.length},drinks:${catalog.drinks.length}`,
+    reason: `vision_frames:${inferredFrames.length},menu:${catalog.menuItems.length},drinks:${catalog.drinks.length}`,
     intent: parsed.intent,
     allowed_use: parsed.allowed_use
   });
@@ -851,16 +1117,33 @@ export const ownerSoulCapture = onRequest({ cors: true }, async (req, res) => {
     return;
   }
 
+  const aiSoul = await generateSoulVector({
+    storeId: parsed.storeId,
+    philosophyHint: parsed.philosophy ?? "店主のこだわりを強調してください。",
+    transcript: parsed.autoInterview?.transcript,
+    menuText: parsed.autoInterview?.menuText
+  });
+
+  const soulVoice = {
+    philosophy: parsed.philosophy ?? aiSoul?.philosophy ?? "季節と火入れを大切にしています。",
+    hungryFast: parsed.hungryFast ?? aiSoul?.hungryFast ?? null,
+    hungryVolume: parsed.hungryVolume ?? aiSoul?.hungryVolume ?? null,
+    adventureIngredient: parsed.adventureIngredient ?? aiSoul?.adventureIngredient ?? null,
+    salesPitchDrink: parsed.salesPitchDrink ?? aiSoul?.salesPitchDrink ?? null,
+    pairingPitch: aiSoul?.pairingPitch ?? null,
+    report18s: aiSoul?.report18s ?? null,
+    translationSeeds: aiSoul?.translationSeeds ?? null
+  };
+
   await getFirestore()
     .doc(`stores/${parsed.storeId}`)
     .set(
       {
-        soulVoice: {
-          philosophy: parsed.philosophy,
-          hungryFast: parsed.hungryFast ?? null,
-          hungryVolume: parsed.hungryVolume ?? null,
-          adventureIngredient: parsed.adventureIngredient ?? null,
-          salesPitchDrink: parsed.salesPitchDrink ?? null
+        soulVoice,
+        soulVector: {
+          generatedAtMs: Date.now(),
+          mode: aiSoul ? "AI_ASSISTED" : "MANUAL",
+          source: parsed.autoInterview ? "LIVE_INTERVIEW" : "FORM"
         },
         updatedAt: FieldValue.serverTimestamp()
       },
@@ -921,15 +1204,12 @@ export const ownerCrystallize = onRequest({ cors: true }, async (req, res) => {
     res.status(400).json({ error: "menu_missing" });
     return;
   }
-  if (store.liabilityAccepted?.allergy !== true || store.liabilityAccepted?.religion !== true) {
-    res.status(400).json({ error: "liability_unaccepted" });
-    return;
-  }
 
   const philosophy = typeof store.soulVoice?.philosophy === "string" ? store.soulVoice.philosophy : "季節と火入れを大切にしています。";
   const catchCopy = `${store.name ?? "この店"}の魂を、ひと皿ずつ。`;
   const history = `${philosophy} 看板料理は${menuItems[0]?.name ?? "おすすめ料理"}。`;
-  const jitSeed = {
+  const generatedSeed = await generateTranslationSeed({ philosophy, menuItems: menuItems.map((x) => x.name) });
+  const jitSeed = generatedSeed ?? {
     ja: menuItems.map((x) => x.name),
     en: menuItems.map((x) => x.name),
     fr: menuItems.map((x) => x.name),
@@ -945,9 +1225,20 @@ export const ownerCrystallize = onRequest({ cors: true }, async (req, res) => {
         catchCopy,
         history,
         jitSeed,
+        soulVector: store.soulVoice ?? null,
         menuItems,
         drinks,
         costLogYen: 0,
+        updatedAt: FieldValue.serverTimestamp()
+      },
+      { merge: true }
+    );
+  await getFirestore()
+    .doc(`stores/${storeId}`)
+    .set(
+      {
+        status: "REVIEWING",
+        isPublic: false,
         updatedAt: FieldValue.serverTimestamp()
       },
       { merge: true }
@@ -1381,6 +1672,241 @@ export const ownerInitialFeeCheckout = onRequest({ cors: true }, async (req, res
     amountYen: 49800,
     idempotencyKey,
     checkoutStatus: "PENDING"
+  });
+});
+
+export const ownerPartnerClosing = onRequest({ cors: true }, async (req, res) => {
+  if (req.method !== "POST") {
+    res.status(405).json({ error: "method_not_allowed" });
+    return;
+  }
+  const parsed = parsePartnerClosingBody(req.body);
+  if (!parsed) {
+    res.status(400).json({ error: "invalid_body" });
+    return;
+  }
+
+  const token = req.header("x-owner-token") ?? "";
+  const expectedToken = process.env.PARTNER_API_TOKEN ?? process.env.OWNER_API_TOKEN ?? "";
+  if (!expectedToken || token !== expectedToken) {
+    res.status(403).json({ error: "forbidden" });
+    return;
+  }
+  const partnerScope = `partner_${parsed.partnerId}`;
+  const clientHash = getOwnerClientHash(req);
+  if (isOwnerRateLimited(partnerScope, clientHash)) {
+    res.set("Retry-After", "60");
+    res.status(429).json({ error: "rate_limited" });
+    return;
+  }
+
+  const storeRef = getFirestore().collection("stores").doc();
+  await storeRef.set(
+    {
+      name: parsed.storeName,
+      address: parsed.address ?? null,
+      phone: parsed.phone ?? null,
+      sourceUrl: parsed.sourceUrl?.toString() ?? null,
+      partnerId: parsed.partnerId,
+      status: "REVIEWING",
+      isPublic: false,
+      paymentStatus: "NG",
+      onboarding: {
+        flow: "partner_closer",
+        createdByPartner: parsed.partnerId,
+        checkoutStatus: "PENDING"
+      },
+      createdAtMs: Date.now(),
+      updatedAt: FieldValue.serverTimestamp()
+    },
+    { merge: true }
+  );
+
+  const stripeSecret = process.env.STRIPE_SECRET_KEY;
+  if (!stripeSecret) {
+    res.status(503).json({ error: "stripe_not_ready" });
+    return;
+  }
+  const publicBase = (process.env.PUBLIC_BASE_URL ?? "https://apicius-owner.web.app").replace(/\/+$/, "");
+  const successUrl = process.env.OWNER_CLOSER_SUCCESS_URL ?? `${publicBase}/activate/success`;
+  const cancelUrl = process.env.OWNER_CLOSER_CANCEL_URL ?? `${publicBase}/activate/cancel`;
+  const idempotencyKey = createHash("sha256")
+    .update(`${storeRef.id}:${parsed.partnerId}:closer:${Math.floor(Date.now() / 60000)}`)
+    .digest("hex")
+    .slice(0, 32);
+
+  const checkout = await createStripeCloserCheckoutSession({
+    secretKey: stripeSecret,
+    successUrl,
+    cancelUrl,
+    storeId: storeRef.id,
+    partnerId: parsed.partnerId,
+    idempotencyKey
+  });
+  if (!checkout) {
+    res.status(503).json({ error: "stripe_checkout_failed", storeId: storeRef.id });
+    return;
+  }
+
+  await storeRef.set(
+    {
+      onboarding: {
+        flow: "partner_closer",
+        checkoutStatus: "PENDING",
+        checkoutSessionId: checkout.id,
+        checkoutRequestedAtMs: Date.now()
+      },
+      updatedAt: FieldValue.serverTimestamp()
+    },
+    { merge: true }
+  );
+  await recordOwnerCost(storeRef.id, "partner_closing");
+
+  const log = await appendApprovalLogEntry({
+    actor: "owner",
+    action: "initial_fee_checkout",
+    storeId: storeRef.id,
+    reason: `partner_closer:${parsed.partnerId}:${idempotencyKey}`,
+    intent: parsed.intent,
+    allowed_use: parsed.allowed_use
+  });
+  res.status(200).json({
+    ok: true,
+    hash: log.hash,
+    storeId: storeRef.id,
+    status: "REVIEWING",
+    checkoutUrl: checkout.url,
+    checkoutSessionId: checkout.id
+  });
+});
+
+export const ownerGeoBootstrap = onRequest({ cors: true }, async (req, res) => {
+  if (req.method !== "POST") {
+    res.status(405).json({ error: "method_not_allowed" });
+    return;
+  }
+  const parsed = parseGeoBootstrapBody(req.body);
+  if (!parsed) {
+    res.status(400).json({ error: "invalid_body" });
+    return;
+  }
+
+  const token = req.header("x-owner-token") ?? "";
+  const expectedToken = process.env.PARTNER_API_TOKEN ?? process.env.OWNER_API_TOKEN ?? "";
+  if (!expectedToken || token !== expectedToken) {
+    res.status(403).json({ error: "forbidden" });
+    return;
+  }
+  const partnerScope = `partner_${parsed.partnerId}`;
+  const clientHash = getOwnerClientHash(req);
+  if (isOwnerRateLimited(partnerScope, clientHash)) {
+    res.set("Retry-After", "60");
+    res.status(429).json({ error: "rate_limited" });
+    return;
+  }
+
+  const startedAt = Date.now();
+  const storeRef = getFirestore().collection("stores").doc();
+  const storeId = storeRef.id;
+  const storeName = parsed.storeName ?? `TONOSAMA-${storeId.slice(0, 6)}`;
+  const geoHint = `lat:${parsed.latitude.toFixed(5)},lng:${parsed.longitude.toFixed(5)}`;
+
+  const soulPromise = generateSoulVector({
+    storeId,
+    philosophyHint: `${storeName} の看板体験を作る。${geoHint}`,
+    transcript: `${storeName} の店頭デモ。最速提供と高単価ペアリングを重視。`,
+    menuText: "刺身、焼き鳥、珍味、日本酒、ハイボール"
+  });
+  const visionPromise = generateVisionFrames({
+    menuText: `${storeName} ${geoHint} 店頭デモ用メニュー`
+  });
+  const [aiSoul, aiVision] = await Promise.all([soulPromise, visionPromise]);
+
+  const frames = aiVision && aiVision.length >= 4 ? aiVision : fallbackVisionFramesFromGeo(parsed);
+  const catalog = convertVisionFramesToCatalog(frames);
+  const translationSeed = await generateTranslationSeed({
+    philosophy: aiSoul?.philosophy ?? `${storeName} の魂を最大化する`,
+    menuItems: catalog.menuItems.map((x) => x.name)
+  });
+
+  const base = process.env.PUBLIC_BASE_URL && process.env.PUBLIC_BASE_URL.length > 0 ? process.env.PUBLIC_BASE_URL : "https://apicius-6bcae.web.app";
+  const guestUrl = `${base.replace(/\/+$/, "")}/s/${storeId}?lang=ja`;
+
+  const batch = getFirestore().batch();
+  batch.set(
+    storeRef,
+    {
+      name: storeName,
+      partnerId: parsed.partnerId,
+      status: "REVIEWING",
+      isPublic: false,
+      paymentStatus: "TRIAL",
+      coordinates: { lat: parsed.latitude, lng: parsed.longitude },
+      sourceUrl: null,
+      businessRules: {
+        supportsCashless: true,
+        hasWifi: true,
+        hasOtoshi: false
+      },
+      soulVoice: {
+        philosophy: aiSoul?.philosophy ?? `${storeName} の魂を一皿に込める`,
+        hungryFast: aiSoul?.hungryFast ?? "枝豆と炙りしめ鯖",
+        hungryVolume: aiSoul?.hungryVolume ?? "炭火焼き鶏盛り",
+        adventureIngredient: aiSoul?.adventureIngredient ?? "珍味三点盛り",
+        salesPitchDrink: aiSoul?.salesPitchDrink ?? "地酒 辛口",
+        pairingPitch: aiSoul?.pairingPitch ?? null,
+        report18s: aiSoul?.report18s ?? null,
+        translationSeeds: aiSoul?.translationSeeds ?? null
+      },
+      onboarding: {
+        flow: "geo_bootstrap",
+        generatedAtMs: Date.now()
+      },
+      updatedAt: FieldValue.serverTimestamp()
+    },
+    { merge: true }
+  );
+  batch.set(getFirestore().doc(`menu_items/${storeId}`), { items: catalog.menuItems }, { merge: true });
+  batch.set(getFirestore().doc(`drinks/${storeId}`), { items: catalog.drinks }, { merge: true });
+  batch.set(
+    getFirestore().doc(`menu_master/${storeId}`),
+    {
+      storeId,
+      ready: true,
+      catchCopy: `${storeName} の魂を、ひと皿ずつ。`,
+      history: aiSoul?.philosophy ?? `${storeName} の看板体験を10秒で起動。`,
+      jitSeed: translationSeed ?? {
+        ja: catalog.menuItems.map((x) => x.name),
+        en: catalog.menuItems.map((x) => x.name),
+        fr: catalog.menuItems.map((x) => x.name),
+        zh: catalog.menuItems.map((x) => x.name)
+      },
+      soulVector: aiSoul ?? null,
+      menuItems: catalog.menuItems,
+      drinks: catalog.drinks,
+      costLogYen: 0,
+      updatedAt: FieldValue.serverTimestamp()
+    },
+    { merge: true }
+  );
+  await batch.commit();
+  await recordOwnerCost(storeId, "geo_bootstrap");
+
+  const log = await appendApprovalLogEntry({
+    actor: "owner",
+    action: "foundation_update",
+    storeId,
+    reason: `geo_bootstrap:${parsed.partnerId}:${geoHint}`,
+    intent: parsed.intent,
+    allowed_use: parsed.allowed_use
+  });
+  res.status(200).json({
+    ok: true,
+    hash: log.hash,
+    storeId,
+    guestUrl,
+    elapsedMs: Date.now() - startedAt,
+    mode: "GEO_10S_BOOTSTRAP"
   });
 });
 

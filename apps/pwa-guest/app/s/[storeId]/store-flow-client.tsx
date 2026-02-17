@@ -9,6 +9,8 @@ import { isAllowed, type PaymentStatus } from "./lib/gates";
 import { emitTelemetry } from "./lib/telemetry-client";
 import { runBillingCheckout, runBillingFlip, type BillingFlipResult } from "./lib/billing-client";
 import { requestOkamiAnswer } from "./lib/okami-client";
+import OkamiAvatar from "./components/OkamiAvatar";
+import ChatStream from "./components/ChatStream";
 
 type Mood = "HUNGRY" | "RELAX" | "ADVENTURE";
 type Step = "AWAKENING" | "MOOD" | "DISCOVERY" | "SLIP" | "SUMIMASEN";
@@ -17,6 +19,9 @@ type OkamiClass = "SECURITY" | "RULE" | "PLACE" | "SOUL";
 type DiscoverySort = "MOOD" | "PRICE_ASC" | "PRICE_DESC" | "NAME";
 type DetailMode = "AUTO" | "COMPACT" | "RICH";
 type DemoTarget = "BLOCKED" | "AWAKENING" | "MOOD" | "DISCOVERY" | "SLIP" | "SUMIMASEN";
+type OkamiVisualState = "idle" | "thinking" | "speaking";
+
+type OkamiLogRow = { q: string; kind: OkamiClass; a: string; source: "api" | "fallback" };
 
 type MenuItem = {
   id: string;
@@ -61,11 +66,11 @@ const DEFAULT_MENU: MenuItem[] = [
     rawTags: ["speed:3", "volume:3", "flavor:spicy", "story:4", "temp:hot", "body:medium", "acidity:low"]
   }
 ];
-const SAFETY_NOTICE: Record<LocaleKey, string> = {
-  ja: "アレルギー・宗教上の制約対応は保証されません。注文前に必ずスタッフへ直接確認してください。",
-  en: "Allergy or religion-related constraints are not guaranteed. Confirm with staff before ordering.",
-  fr: "Les contraintes d'allergie ou religieuses ne sont pas garanties. Verifiez avec le personnel.",
-  zh: "无法保证满足过敏或宗教限制，下单前请务必与店员确认。"
+const OPERATIONS_NOTICE: Record<LocaleKey, string> = {
+  ja: "この画面は店主承認済みカードのみ表示します。営業中に更新される場合があります。",
+  en: "Only owner-approved cards are shown here. Content can update during service.",
+  fr: "Seules les cartes approuvees par le proprietaire sont affichees ici. Le contenu peut evoluer.",
+  zh: "此页面仅显示店主已批准的卡片，营业中可能更新。"
 };
 const CLICKWRAP_TEXT: Record<LocaleKey, string> = {
   ja: "Unlock を押すと利用規約に同意し、匿名の集計分析に同意したものとみなされます。",
@@ -273,16 +278,39 @@ const MOOD_LABELS: Record<LocaleKey, Record<Mood, string>> = {
   zh: { HUNGRY: "饥饿", RELAX: "放松", ADVENTURE: "冒险" }
 };
 
+const MOOD_DETAIL: Record<LocaleKey, Record<Mood, string>> = {
+  ja: {
+    HUNGRY: "すぐ出る・満足感優先",
+    RELAX: "会話と余韻を楽しむ",
+    ADVENTURE: "店主の偏愛を体験する"
+  },
+  en: {
+    HUNGRY: "Fast and filling first",
+    RELAX: "Slow pace with pairings",
+    ADVENTURE: "Chef's wild picks"
+  },
+  fr: {
+    HUNGRY: "Rapide et consistant",
+    RELAX: "Rythme lent et accords",
+    ADVENTURE: "Selection audacieuse du chef"
+  },
+  zh: {
+    HUNGRY: "优先上菜速度与饱腹感",
+    RELAX: "慢节奏与搭配体验",
+    ADVENTURE: "主厨偏爱与惊喜"
+  }
+};
+
 const OKAMI_PRESETS: Record<LocaleKey, string[]> = {
-  ja: ["allergy check", "wifi and payment", "where is this place", "tell me chef story"],
-  en: ["allergy check", "wifi and payment", "where is this place", "tell me chef story"],
-  fr: ["verification allergie", "wifi et paiement", "ou est ce lieu", "histoire du chef"],
-  zh: ["过敏检查", "Wi-Fi与支付", "店铺位置", "讲讲主厨故事"]
+  ja: ["wifi and payment", "where is this place", "tell me chef story", "best pairing tonight"],
+  en: ["wifi and payment", "where is this place", "tell me chef story", "best pairing tonight"],
+  fr: ["wifi et paiement", "ou est ce lieu", "histoire du chef", "meilleur accord ce soir"],
+  zh: ["Wi-Fi与支付", "店铺位置", "讲讲主厨故事", "今晚最佳搭配"]
 };
 
 function classifyOkamiPrompt(input: string): OkamiClass {
   const q = input.toLowerCase();
-  if (/(allergy|allerg|danger|safe|nut|peanut|宗教|religion|alcohol for children|medical|薬)/.test(q)) {
+  if (/(danger|safe|medical|薬|attack|exploit|bypass|jailbreak)/.test(q)) {
     return "SECURITY";
   }
   if (/(wifi|wi-fi|cash|card|charge|tip|open|close|hours|営業時間|支払い)/.test(q)) {
@@ -364,7 +392,8 @@ export default function StoreFlowClient({ storeId }: StoreFlowClientProps) {
   const [showSouvenir, setShowSouvenir] = useState(false);
   const [locale, setLocale] = useState<LocaleKey>("en");
   const [okamiInput, setOkamiInput] = useState("");
-  const [okamiLog, setOkamiLog] = useState<Array<{ q: string; kind: OkamiClass; a: string; source: "api" | "fallback" }>>([]);
+  const [okamiLog, setOkamiLog] = useState<OkamiLogRow[]>([]);
+  const [okamiVisualState, setOkamiVisualState] = useState<OkamiVisualState>("idle");
   const [okamiNotice, setOkamiNotice] = useState<string | null>(null);
   const [storeGuide, setStoreGuide] = useState<{
     name?: string;
@@ -378,14 +407,9 @@ export default function StoreFlowClient({ storeId }: StoreFlowClientProps) {
       hasWifi?: boolean;
       hasOtoshi?: boolean;
     };
-    liabilityAccepted?: {
-      allergy?: boolean;
-      religion?: boolean;
-    };
   }>({});
   const [trayFxText, setTrayFxText] = useState<string | null>(null);
   const [billing, setBilling] = useState<BillingFlipResult | null>(null);
-  const [allergyInput, setAllergyInput] = useState("");
   const [securityBlock, setSecurityBlock] = useState<string | null>(null);
   const [trayParticles, setTrayParticles] = useState<Array<{ id: string; x: number; y: number; text: string }>>([]);
   const [pairingsByFood, setPairingsByFood] = useState<Record<string, string[]>>({});
@@ -743,21 +767,7 @@ export default function StoreFlowClient({ storeId }: StoreFlowClientProps) {
   }
 
   function addToTray(itemId: string, triggerEl?: HTMLElement) {
-    const selectedAllergens = allergyInput
-      .split(",")
-      .map((x) => x.trim().toLowerCase())
-      .filter((x) => x.length > 0);
     const hit = menuItems.find((item) => item.id === itemId);
-    const itemAllergens = extractAllergens(hit?.rawTags ?? []);
-    const blocked = selectedAllergens.find((token) =>
-      itemAllergens.some((allergen) => allergen.includes(token) || token.includes(allergen))
-    );
-    if (blocked) {
-      const msg = `allergy_blocked:${blocked}`;
-      setSecurityBlock(msg);
-      setStep("SUMIMASEN");
-      return;
-    }
 
     setTray((prev) => ({ ...prev, [itemId]: (prev[itemId] ?? 0) + 1 }));
     setLastAddedItemId(itemId);
@@ -795,14 +805,12 @@ export default function StoreFlowClient({ storeId }: StoreFlowClientProps) {
     const t = LOCALE_LABELS[locale];
     const ui = UI_TEXT[locale];
     const hook = HOOK_COPY[locale];
-    const liabilityReady =
-      !storeGuide.liabilityAccepted ||
-      (storeGuide.liabilityAccepted.allergy === true && storeGuide.liabilityAccepted.religion === true);
     const decisionLine = lpVariant === "a" ? HOOK_DECISION[locale] : `${HOOK_DECISION[locale]} / Variant B`;
     return (
       <section className="card flow-card awakening">
-        <h1>{ui.awakeningTitle}</h1>
-        <p>店舗: {storeId}</p>
+        <p className="runtime-kicker">Awakening Layer</p>
+        <h1>{ui.awakeningTitle} / Unlock The Soul</h1>
+        <p className="runtime-sub">店舗: {storeId}</p>
         <p className="small">Locale: {locale.toUpperCase()} / Payment: {paymentStatus}</p>
         <p className="small">Visit: {visitCount} / Detail: {effectiveDetailMode}</p>
         <p className="small">
@@ -822,6 +830,11 @@ export default function StoreFlowClient({ storeId }: StoreFlowClientProps) {
           <p className="small hook-line">4. {decisionLine}</p>
           <p className="small hook-line">5. {lpVariant === "a" ? hook.proof : hook.guarantee}</p>
         </div>
+        <div className="experience-points">
+          <p className="small">3 taps to complete your first order.</p>
+          <p className="small">No account required. No hidden screens.</p>
+          <p className="small">Switch to basic mode anytime.</p>
+        </div>
         <div className="locale-switch" aria-label="language switcher">
           {(["ja", "en", "fr", "zh"] as const).map((k) => (
             <button key={k} className={`btn btn-quiet ${locale === k ? "is-active" : ""}`} type="button" onClick={() => setLocale(k)}>
@@ -832,8 +845,7 @@ export default function StoreFlowClient({ storeId }: StoreFlowClientProps) {
         <p className="small">{t.welcome}</p>
         <p>{t.prompt}</p>
         <p className="small">{ui.consentRequirement}</p>
-        <p className="small caution">{SAFETY_NOTICE[locale]}</p>
-        {!liabilityReady ? <p className="small caution">店舗側の免責設定が未完了のため、現在はフローを開始できません。</p> : null}
+        <p className="small">{OPERATIONS_NOTICE[locale]}</p>
         <p className="small">{CLICKWRAP_TEXT[locale]}</p>
         <label className="checkline">
           <input
@@ -850,9 +862,9 @@ export default function StoreFlowClient({ storeId }: StoreFlowClientProps) {
           <span>{ui.consentLabel}</span>
         </label>
         <button
-          className="btn"
+          className="btn btn-unlock"
           type="button"
-          disabled={!consentChecked || !liabilityReady}
+          disabled={!consentChecked}
           onClick={() => {
             trackEvent("consent");
             void emitTelemetry(gateToken, "consent");
@@ -865,7 +877,7 @@ export default function StoreFlowClient({ storeId }: StoreFlowClientProps) {
           {t.unlock}
         </button>
         <button
-          className="btn btn-quiet"
+          className="btn btn-quiet btn-plain"
           type="button"
           onClick={() => {
             if (!consentChecked) {
@@ -910,42 +922,104 @@ export default function StoreFlowClient({ storeId }: StoreFlowClientProps) {
 
     return (
       <section className="card flow-card">
+        <p className="runtime-kicker">Mood Gateway</p>
         <h1>{ui.moodTitle}</h1>
-        <p>{ui.moodPrompt}</p>
+        <p className="runtime-sub">{ui.moodPrompt}</p>
         <div className="mood-grid">
           <button
-            className="btn"
+            className="btn mood-tile"
             type="button"
             onClick={() => {
               void decideMood("HUNGRY", "Hungry");
             }}
             data-testid="mood-hungry"
           >
-            {MOOD_LABELS[locale].HUNGRY}
+            <span className="mood-emoji">🍚</span>
+            <span>
+              <strong>{MOOD_LABELS[locale].HUNGRY}</strong>
+              <span className="small">{MOOD_DETAIL[locale].HUNGRY}</span>
+            </span>
           </button>
           <button
-            className="btn"
+            className="btn mood-tile"
             type="button"
             onClick={() => {
               void decideMood("RELAX", "Relax");
             }}
             data-testid="mood-relax"
           >
-            {MOOD_LABELS[locale].RELAX}
+            <span className="mood-emoji">🍶</span>
+            <span>
+              <strong>{MOOD_LABELS[locale].RELAX}</strong>
+              <span className="small">{MOOD_DETAIL[locale].RELAX}</span>
+            </span>
           </button>
           <button
-            className="btn"
+            className="btn mood-tile"
             type="button"
             onClick={() => {
               void decideMood("ADVENTURE", "Adventure");
             }}
             data-testid="mood-adventure"
           >
-            {MOOD_LABELS[locale].ADVENTURE}
+            <span className="mood-emoji">💎</span>
+            <span>
+              <strong>{MOOD_LABELS[locale].ADVENTURE}</strong>
+              <span className="small">{MOOD_DETAIL[locale].ADVENTURE}</span>
+            </span>
           </button>
         </div>
       </section>
     );
+  }
+
+  async function handleOkamiAsk() {
+    const q = okamiInput.trim();
+    if (!q) {
+      return;
+    }
+    setOkamiNotice(null);
+    setOkamiVisualState("thinking");
+    void emitTelemetry(gateToken, "okami_ask");
+    const remote = await requestOkamiAnswer(gateToken, q);
+    const result = remote.status === "ok" ? remote.answer : answerOkamiPrompt(q);
+    const source: "api" | "fallback" = remote.status === "ok" ? "api" : "fallback";
+    if (remote.status === "ok") {
+      void emitTelemetry(gateToken, "okami_api");
+    } else {
+      void emitTelemetry(gateToken, "okami_fallback");
+      if (remote.status === "rate_limited") {
+        setOkamiNotice("Okami is rate-limited. Fallback answer is shown.");
+        void emitTelemetry(gateToken, "okami_rate_limited");
+      } else if (remote.status === "unauthorized") {
+        setOkamiNotice("Okami token is unavailable. Fallback answer is shown.");
+      } else {
+        setOkamiNotice("Okami is temporarily unavailable. Fallback answer is shown.");
+      }
+    }
+    const rulesAnswer = [
+      `cashless:${storeGuide.businessRules?.supportsCashless ? "yes" : "no"}`,
+      `wifi:${storeGuide.businessRules?.hasWifi ? "yes" : "no"}`,
+      `otoshi:${storeGuide.businessRules?.hasOtoshi ? "yes" : "no"}`
+    ].join(" / ");
+    const placeAnswer =
+      result.kind === "PLACE"
+        ? `${storeGuide.name ? `${storeGuide.name} / ` : ""}${storeGuide.address ? `${storeGuide.address} / ` : ""}${
+            storeGuide.mapUrl ? `Map: ${storeGuide.mapUrl}` : result.text
+          }`
+        : result.kind === "RULE"
+          ? `Rules: ${rulesAnswer}`
+          : result.text;
+    setOkamiLog((prev) => [...prev, { q, kind: result.kind, a: placeAnswer, source }].slice(-8));
+    setOkamiInput("");
+    setOkamiVisualState("speaking");
+    setTimeout(() => {
+      setOkamiVisualState("idle");
+    }, 800);
+    if (result.kind === "SECURITY") {
+      void emitTelemetry(gateToken, "okami_blocked");
+      setStep("SUMIMASEN");
+    }
   }
 
   function renderDiscovery() {
@@ -976,9 +1050,14 @@ export default function StoreFlowClient({ storeId }: StoreFlowClientProps) {
     return (
       <>
       <section className="card flow-card">
+        <p className="runtime-kicker">Discovery Feed</p>
         <h1>{ui.discoveryTitle}</h1>
         <p className="small">Mood: {basicListMode ? "BASIC" : mood ? MOOD_LABELS[locale][mood] : "-"}</p>
         <p className="small">{moodNarrative(locale, mood, basicListMode)}</p>
+        <div className="experience-points">
+          <p className="small">Tap once to add. Tap twice to tune quantity from the tray.</p>
+          <p className="small">Ask Okami for place, service rules, and best pairing in your language.</p>
+        </div>
         <label className="small" htmlFor="discovery-sort">
           Sort:
           <select
@@ -1028,8 +1107,7 @@ export default function StoreFlowClient({ storeId }: StoreFlowClientProps) {
           </p>
           {effectiveDetailMode === "RICH" ? (
             <p className="small">
-              Safety Filter:{" "}
-              {storeGuide.liabilityAccepted?.allergy === true && storeGuide.liabilityAccepted?.religion === true ? "ready" : "caution"}
+              Review Sync: {storeGuide.businessRules ? "ready" : "syncing"}
             </p>
           ) : null}
         </div>
@@ -1090,10 +1168,6 @@ export default function StoreFlowClient({ storeId }: StoreFlowClientProps) {
           </p>
         ) : null}
         {!isOnline ? <p className="small caution">offline: map and external links may fail</p> : null}
-        <p className={`small ${storeGuide.liabilityAccepted?.allergy && storeGuide.liabilityAccepted?.religion ? "" : "caution"}`}>
-          Liability: allergy={storeGuide.liabilityAccepted?.allergy ? "accepted" : "missing"} / religion=
-          {storeGuide.liabilityAccepted?.religion ? "accepted" : "missing"}
-        </p>
         <ul className="menu-list">
           {sortedItems.map((item) => (
             <li key={item.id} className={`menu-item ${lastAddedItemId === item.id ? "added" : ""}`}>
@@ -1133,98 +1207,29 @@ export default function StoreFlowClient({ storeId }: StoreFlowClientProps) {
             <section className="okami">
               <h2>Elegant Okami</h2>
               <p className="small">[SECURITY] / [RULE] / [PLACE] / [SOUL]</p>
-              <div className="okami-row">
-                <input
-                  value={okamiInput}
-                  onChange={(e) => setOkamiInput(e.target.value)}
-                  placeholder="Ask Okami..."
-                  className="okami-input"
-                  data-testid="okami-input"
-                  onKeyDown={(e) => {
-                    if (e.key !== "Enter") {
-                      return;
-                    }
-                    e.preventDefault();
-                    (e.currentTarget.nextElementSibling as HTMLButtonElement | null)?.click();
-                  }}
-                />
-                <button
-                  className="btn"
-                  type="button"
-                  onClick={async () => {
-                    const q = okamiInput.trim();
-                    if (!q) return;
-                    setOkamiNotice(null);
-                    void emitTelemetry(gateToken, "okami_ask");
-                    const remote = await requestOkamiAnswer(gateToken, q);
-                    const result = remote.status === "ok" ? remote.answer : answerOkamiPrompt(q);
-                    const source: "api" | "fallback" = remote.status === "ok" ? "api" : "fallback";
-                    if (remote.status === "ok") {
-                      void emitTelemetry(gateToken, "okami_api");
-                    } else {
-                      void emitTelemetry(gateToken, "okami_fallback");
-                      if (remote.status === "rate_limited") {
-                        setOkamiNotice("Okami is rate-limited. Fallback answer is shown.");
-                        void emitTelemetry(gateToken, "okami_rate_limited");
-                      } else if (remote.status === "unauthorized") {
-                        setOkamiNotice("Okami token is unavailable. Fallback answer is shown.");
-                      } else {
-                        setOkamiNotice("Okami is temporarily unavailable. Fallback answer is shown.");
-                      }
-                    }
-                    const rulesAnswer = [
-                      `cashless:${storeGuide.businessRules?.supportsCashless ? "yes" : "no"}`,
-                      `wifi:${storeGuide.businessRules?.hasWifi ? "yes" : "no"}`,
-                      `otoshi:${storeGuide.businessRules?.hasOtoshi ? "yes" : "no"}`
-                    ].join(" / ");
-                    const placeAnswer =
-                      result.kind === "PLACE"
-                        ? `${storeGuide.name ? `${storeGuide.name} / ` : ""}${
-                            storeGuide.address ? `${storeGuide.address} / ` : ""
-                          }${storeGuide.mapUrl ? `Map: ${storeGuide.mapUrl}` : result.text}`
-                        : result.kind === "RULE"
-                          ? `Rules: ${rulesAnswer}`
-                          : result.text;
-                    setOkamiLog((prev) => [...prev, { q, kind: result.kind, a: placeAnswer, source }].slice(-3));
-                    setOkamiInput("");
-                    if (result.kind === "SECURITY") {
-                      void emitTelemetry(gateToken, "okami_blocked");
-                      setStep("SUMIMASEN");
-                    }
-                  }}
-                  data-testid="okami-ask-button"
-                >
-                  Ask
-                </button>
-              </div>
-              <div className="okami-row">
-                {OKAMI_PRESETS[locale].map((preset) => (
-                  <button key={preset} className="btn btn-quiet" type="button" onClick={() => setOkamiInput(preset)}>
-                    {preset}
-                  </button>
-                ))}
-              </div>
-              {okamiNotice ? <p className="small caution">{okamiNotice}</p> : null}
-              <ul className="menu-list">
-                {okamiLog.map((row, idx) => (
-                  <li key={`${row.kind}-${idx}`} className="menu-item">
-                    <span>
-                      [{row.kind}/{row.source}] {row.q}
-                    </span>
-                    <span className="small">{row.a}</span>
-                  </li>
-                ))}
-              </ul>
-            </section>
-            <section className="okami">
-              <h2>Allergy Guard</h2>
-              <p className="small">例: peanut, egg, shrimp (comma separated)</p>
-              <input
-                className="okami-input"
-                value={allergyInput}
-                onChange={(e) => setAllergyInput(e.target.value)}
-                placeholder="peanut, shrimp"
-                data-testid="allergy-input"
+              <OkamiAvatar status={okamiVisualState} />
+              <ChatStream
+                messages={okamiLog.flatMap((row, idx) => [
+                  {
+                    id: `${idx}-q`,
+                    role: "user" as const,
+                    text: row.q
+                  },
+                  {
+                    id: `${idx}-a`,
+                    role: "okami" as const,
+                    label: `${row.kind}/${row.source}`,
+                    text: row.a
+                  }
+                ])}
+                input={okamiInput}
+                notice={okamiNotice}
+                presets={OKAMI_PRESETS[locale]}
+                onInputChange={setOkamiInput}
+                onSubmit={() => {
+                  void handleOkamiAsk();
+                }}
+                onPreset={setOkamiInput}
               />
             </section>
           </>
@@ -1404,6 +1409,12 @@ export default function StoreFlowClient({ storeId }: StoreFlowClientProps) {
   return (
     <main>
       <div className="flow-shell">
+        <section className="card flow-card runtime-hero">
+          <p className="runtime-kicker">Tonosama Guest Runtime</p>
+          <h1 className="runtime-title">Do Not Just Eat.</h1>
+          <p className="runtime-sub">Unlock soul-driven dining in your language, with pairing and guided ordering.</p>
+        </section>
+
         <section className="card flow-card">
           <h1>Guest Runtime</h1>
           <p className="small">storeId: {storeId}</p>
@@ -1494,19 +1505,12 @@ export default function StoreFlowClient({ storeId }: StoreFlowClientProps) {
         {allowed ? (
           <section className="card safety-note" data-testid="safety-disclaimer">
             <h2>{UI_TEXT[locale].safetyTitle}</h2>
-            <p className="small caution">{SAFETY_NOTICE[locale]}</p>
+            <p className="small">{OPERATIONS_NOTICE[locale]}</p>
           </section>
         ) : null}
       </div>
     </main>
   );
-}
-
-function extractAllergens(tags: string[]): string[] {
-  return tags
-    .filter((tag) => tag.startsWith("allergen:"))
-    .map((tag) => tag.slice("allergen:".length).toLowerCase())
-    .filter((tag) => tag.length > 0);
 }
 
 function playTraySound(): void {

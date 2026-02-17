@@ -69,7 +69,8 @@ async function createStripeCheckoutSession(args: {
     "line_items[0][quantity]": "1",
     "metadata[storeId]": args.storeId,
     "metadata[mood]": args.mood,
-    "metadata[idempotencyKey]": args.idempotencyKey
+    "metadata[idempotencyKey]": args.idempotencyKey,
+    "metadata[checkoutKind]": "guest_unlock"
   });
 
   const res = await fetch("https://api.stripe.com/v1/checkout/sessions", {
