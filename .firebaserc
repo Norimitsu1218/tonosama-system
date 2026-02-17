@@ -1,15 +1,8 @@
 {
   "projects": {
-    "default": "REPLACE_WITH_FIREBASE_PROJECT_ID"
+    "default": "apicius-6bcae"
   },
   "targets": {
-    "REPLACE_WITH_FIREBASE_PROJECT_ID": {
-      "hosting": {
-        "guest": [
-          "REPLACE_WITH_HOSTING_SITE_ID"
-        ]
-      }
-    },
     "apicius-6bcae": {
       "hosting": {
         "guest": [

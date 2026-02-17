@@ -10,6 +10,8 @@ import {
   type OkamiKind,
   type OkamiResponse
 } from "./okamiEngine";
+import { resolveGemPrompt } from "./okamiGems";
+import { parseExecutionMode, selectGeminiModel, type OkamiExecutionMode } from "./okamiRuntimePolicy";
 import { readStoreBundle } from "./storeData";
 import { verifyGateToken } from "./token";
 
@@ -50,10 +52,10 @@ const CACHE_TTL_MS = 5 * 60_000;
 const answerCache = new Map<string, CacheState>();
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY;
+const OKAMI_ENGINE = process.env.OKAMI_ENGINE ?? "auto";
 const ai = GEMINI_API_KEY
   ? genkit({
-      plugins: [googleAI({ apiKey: GEMINI_API_KEY })],
-      model: googleAI.model("gemini-2.5-flash")
+      plugins: [googleAI({ apiKey: GEMINI_API_KEY })]
     })
   : null;
 
@@ -81,16 +83,20 @@ export function buildOkamiResponse(kind: OkamiKind): OkamiResponse {
   return buildResponseDeterministic(kind);
 }
 
-async function runGeminiOkami(data: IInput): Promise<IOutput> {
-  if (!ai) {
+async function runGeminiOkami(data: IInput & { kindHint: OkamiKind; mode: OkamiExecutionMode }): Promise<IOutput> {
+  if (!ai || OKAMI_ENGINE === "deterministic") {
     throw new Error("gemini_not_ready");
   }
+  const gemSystem = resolveGemPrompt(data.kindHint);
+  const model = selectGeminiModel(data.kindHint, data.mode);
 
   const prompt = [
     'You are "Okami", the AI concierge of TONOSAMA.',
     "Classify user input into SECURITY, RULE, ORDER, or CHAT.",
     "Keep response concise and polite in Japanese.",
     "If malicious/safety risk, set classification SECURITY.",
+    `Execution mode: ${data.mode}.`,
+    `Gem guidance for ${data.kindHint}: ${gemSystem}`,
     "Context JSON:",
     JSON.stringify(data.context ?? {}),
     "User Input:",
@@ -98,6 +104,7 @@ async function runGeminiOkami(data: IInput): Promise<IOutput> {
   ].join("\n");
 
   const response = await ai.generate({
+    model: googleAI.model(model),
     prompt,
     output: {
       schema: GeminiOutputSchema
@@ -268,6 +275,8 @@ export const okamiAnswer = onRequest({ cors: true }, async (req, res) => {
   }
 
   const normalizedPrompt = prompt.trim();
+  const kindHint = classifyOkamiPrompt(normalizedPrompt);
+  const mode = parseExecutionMode(req.body?.mode);
   if (isPromptInjectionLike(normalizedPrompt)) {
     res.status(200).json({
       kind: "SECURITY",
@@ -305,6 +314,8 @@ export const okamiAnswer = onRequest({ cors: true }, async (req, res) => {
     const generated = await runGeminiOkami({
       storeId: payload.storeId,
       text: normalizedPrompt,
+      kindHint,
+      mode,
       context: {
         store: bundleStore,
         locale: req.body?.locale ?? null

@@ -47,7 +47,7 @@ Legend:
 - `⭕️` Guest checkout endpoint path + webhook idempotency protections
 - `⭕️` Billing aggregates + owner billing status read model
 - `⭕️` Runtime billing code path (flip/checkout/webhook/status)
-- `💁‍♂️` Stripe live keys, webhook endpoint registration, dashboard-side config
+- `⭕️` Stripe deployment/verification autopilot (`ops:autopilot`) including signed webhook smoke
 
 ## Foundation / AI Pipeline
 - `⭕️` Okami JSON classifier path (`SECURITY/RULE/PLACE/SOUL`) + fallback behavior

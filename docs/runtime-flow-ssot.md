@@ -31,7 +31,7 @@ This file is the single source of truth for implementation status of the guest r
 - `⭕️` Pairing matrix includes server-side ranking and owner override path (`/api/owner/pairingOverrides`).
 - `⭕️` Tray visual effects include wood tray state, particle arc, sound, and call-state animation.
 - `⭕️` Digital souvenir supports stamped receipt image export and share action.
-- `△` Stripe production payment path is wired (`/api/billing/checkout`, webhook idempotency), pending live secret/config rollout.
+- `⭕️` Stripe production payment path is operational (`/api/billing/checkout`, webhook idempotency, secret-bound webhook, signed smoke via `ops/autopilot.sh`).
 
 ## Owner / Build-time
 - `⭕️` Owner action APIs (`approve`/`reject`/`soldout_toggle`) through Functions only.

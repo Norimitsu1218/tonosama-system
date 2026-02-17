@@ -8,9 +8,11 @@ import { requestGateToken } from "./lib/gate-client";
 import { isAllowed, type PaymentStatus } from "./lib/gates";
 import { emitTelemetry } from "./lib/telemetry-client";
 import { runBillingCheckout, runBillingFlip, type BillingFlipResult } from "./lib/billing-client";
-import { requestOkamiAnswer } from "./lib/okami-client";
+import { requestOkamiAnswer, type OkamiExecutionMode } from "./lib/okami-client";
 import OkamiAvatar from "./components/OkamiAvatar";
 import ChatStream from "./components/ChatStream";
+import { isGuestLocale, normalizeGuestLocale, type GuestLocale } from "../../lib/guest-locale";
+import { readClickwrapSession } from "../../lib/clickwrap-session";
 
 type Mood = "HUNGRY" | "RELAX" | "ADVENTURE";
 type Step = "AWAKENING" | "MOOD" | "DISCOVERY" | "SLIP" | "SUMIMASEN";
@@ -34,6 +36,7 @@ type MenuItem = {
 
 type StoreFlowClientProps = {
   storeId: string;
+  entryMode?: "runtime" | "post-info";
 };
 
 const MENU_CACHE_KEY = "tonosama_guest_menu_v1";
@@ -66,22 +69,20 @@ const DEFAULT_MENU: MenuItem[] = [
     rawTags: ["speed:3", "volume:3", "flavor:spicy", "story:4", "temp:hot", "body:medium", "acidity:low"]
   }
 ];
-const OPERATIONS_NOTICE: Record<LocaleKey, string> = {
+const OPERATIONS_NOTICE: Record<GuestLocale, string> = {
   ja: "この画面は店主承認済みカードのみ表示します。営業中に更新される場合があります。",
   en: "Only owner-approved cards are shown here. Content can update during service.",
   fr: "Seules les cartes approuvees par le proprietaire sont affichees ici. Le contenu peut evoluer.",
   zh: "此页面仅显示店主已批准的卡片，营业中可能更新。"
 };
-const CLICKWRAP_TEXT: Record<LocaleKey, string> = {
+const CLICKWRAP_TEXT: Record<GuestLocale, string> = {
   ja: "Unlock を押すと利用規約に同意し、匿名の集計分析に同意したものとみなされます。",
   en: "By tapping unlock, you agree to our Terms and anonymous aggregate analytics.",
   fr: "En appuyant sur unlock, vous acceptez les conditions et l'analyse agregee anonyme.",
   zh: "点击 unlock 即表示你同意条款与匿名聚合分析。"
 };
 
-type LocaleKey = "ja" | "en" | "fr" | "zh";
-
-const LOCALE_LABELS: Record<LocaleKey, { welcome: string; prompt: string; unlock: string; basic: string }> = {
+const LOCALE_LABELS: Record<GuestLocale, { welcome: string; prompt: string; unlock: string; basic: string }> = {
   ja: {
     welcome: "ようこそ日本へ。遠くからのご来店ありがとうございます。",
     prompt: "ただ食べるだけでなく、店主の魂まで味わいますか？",
@@ -109,7 +110,7 @@ const LOCALE_LABELS: Record<LocaleKey, { welcome: string; prompt: string; unlock
 };
 
 const HOOK_COPY: Record<
-  LocaleKey,
+  GuestLocale,
   { empathy: string; agitation: string; solution: string; proof: string; guarantee: string }
 > = {
   ja: {
@@ -142,14 +143,14 @@ const HOOK_COPY: Record<
   }
 };
 
-const HOOK_DECISION: Record<LocaleKey, string> = {
+const HOOK_DECISION: Record<GuestLocale, string> = {
   ja: "4. 決断: Unlockするか、簡易メニューに進むか選択してください。",
   en: "4. Decision: unlock the full journey or continue with a basic list.",
   fr: "4. Decision: debloquez le parcours complet ou continuez en mode basique.",
   zh: "4. 决策: 解锁完整体验，或继续使用基础菜单。"
 };
 
-const PAIRING_RATIONALE_LABEL: Record<LocaleKey, string> = {
+const PAIRING_RATIONALE_LABEL: Record<GuestLocale, string> = {
   ja: "根拠",
   en: "Rationale",
   fr: "Raison",
@@ -157,7 +158,7 @@ const PAIRING_RATIONALE_LABEL: Record<LocaleKey, string> = {
 };
 
 const UI_TEXT: Record<
-  LocaleKey,
+  GuestLocale,
   {
     awakeningTitle: string;
     consentRequirement: string;
@@ -271,14 +272,14 @@ const UI_TEXT: Record<
   }
 };
 
-const MOOD_LABELS: Record<LocaleKey, Record<Mood, string>> = {
+const MOOD_LABELS: Record<GuestLocale, Record<Mood, string>> = {
   ja: { HUNGRY: "腹ペコ", RELAX: "しっぽり", ADVENTURE: "冒険" },
   en: { HUNGRY: "Hungry", RELAX: "Relax", ADVENTURE: "Adventure" },
   fr: { HUNGRY: "Affame", RELAX: "Detente", ADVENTURE: "Aventure" },
   zh: { HUNGRY: "饥饿", RELAX: "放松", ADVENTURE: "冒险" }
 };
 
-const MOOD_DETAIL: Record<LocaleKey, Record<Mood, string>> = {
+const MOOD_DETAIL: Record<GuestLocale, Record<Mood, string>> = {
   ja: {
     HUNGRY: "すぐ出る・満足感優先",
     RELAX: "会話と余韻を楽しむ",
@@ -301,7 +302,7 @@ const MOOD_DETAIL: Record<LocaleKey, Record<Mood, string>> = {
   }
 };
 
-const OKAMI_PRESETS: Record<LocaleKey, string[]> = {
+const OKAMI_PRESETS: Record<GuestLocale, string[]> = {
   ja: ["wifi and payment", "where is this place", "tell me chef story", "best pairing tonight"],
   en: ["wifi and payment", "where is this place", "tell me chef story", "best pairing tonight"],
   fr: ["wifi et paiement", "ou est ce lieu", "histoire du chef", "meilleur accord ce soir"],
@@ -366,13 +367,14 @@ function isMenuItem(value: unknown): value is MenuItem {
   );
 }
 
-export default function StoreFlowClient({ storeId }: StoreFlowClientProps) {
+export default function StoreFlowClient({ storeId, entryMode = "runtime" }: StoreFlowClientProps) {
   const searchParams = useSearchParams();
   const mockMode = searchParams.get("mock") === "1";
   const localeQuery = searchParams.get("lang");
   const lpVariant = searchParams.get("lp") === "b" ? "b" : "a";
   const checkoutResult = searchParams.get("checkout");
   const checkoutSessionId = searchParams.get("session_id");
+  const aiModeQuery = searchParams.get("aiMode");
   const [paymentStatus, setPaymentStatus] = useState<PaymentStatus>(mockMode ? "PAID" : "NG");
   const [gateState, setGateState] = useState<GateState>(mockMode ? "allowed" : "checking");
   const [gateToken, setGateToken] = useState<string | null>(null);
@@ -390,7 +392,7 @@ export default function StoreFlowClient({ storeId }: StoreFlowClientProps) {
   const [basicListBlockedByConsent, setBasicListBlockedByConsent] = useState(false);
   const [lastAddedItemId, setLastAddedItemId] = useState<string | null>(null);
   const [showSouvenir, setShowSouvenir] = useState(false);
-  const [locale, setLocale] = useState<LocaleKey>("en");
+  const [locale, setLocale] = useState<GuestLocale>("en");
   const [okamiInput, setOkamiInput] = useState("");
   const [okamiLog, setOkamiLog] = useState<OkamiLogRow[]>([]);
   const [okamiVisualState, setOkamiVisualState] = useState<OkamiVisualState>("idle");
@@ -429,17 +431,20 @@ export default function StoreFlowClient({ storeId }: StoreFlowClientProps) {
   const discoveryEnterAtRef = useRef<number | null>(null);
   const discoveryScrollStartRef = useRef<number>(0);
   const mountAtRef = useRef<number>(Date.now());
+  const postInfoEntry = entryMode === "post-info";
+  const okamiMode: OkamiExecutionMode =
+    aiModeQuery === "robustness" || aiModeQuery === "scalability" ? aiModeQuery : "speed";
 
   useEffect(() => {
-    if (localeQuery === "ja" || localeQuery === "en" || localeQuery === "fr" || localeQuery === "zh") {
-      setLocale(localeQuery);
+    if (localeQuery !== null) {
+      setLocale(normalizeGuestLocale(localeQuery));
       return;
     }
     if (typeof window === "undefined" || typeof navigator === "undefined") {
       return;
     }
     const stored = window.localStorage.getItem("tonosama_guest_locale");
-    if (stored === "ja" || stored === "en" || stored === "fr" || stored === "zh") {
+    if (stored && isGuestLocale(stored)) {
       setLocale(stored);
       return;
     }
@@ -449,6 +454,19 @@ export default function StoreFlowClient({ storeId }: StoreFlowClientProps) {
     else if (lang.startsWith("zh")) setLocale("zh");
     else setLocale("en");
   }, [localeQuery]);
+
+  useEffect(() => {
+    if (!postInfoEntry) {
+      return;
+    }
+    const clickwrap = readClickwrapSession(storeId);
+    if (!clickwrap) {
+      return;
+    }
+    setConsentChecked(true);
+    setBasicListBlockedByConsent(false);
+    setLocale(clickwrap.lang);
+  }, [postInfoEntry, storeId]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -669,6 +687,13 @@ export default function StoreFlowClient({ storeId }: StoreFlowClientProps) {
   const allowed = mockMode
     ? isAllowed(paymentStatus)
     : gateState === "allowed" && !!gateToken && isAllowed(paymentStatus);
+
+  useEffect(() => {
+    if (!postInfoEntry || step !== "AWAKENING" || !allowed || !consentChecked) {
+      return;
+    }
+    setStep("MOOD");
+  }, [allowed, consentChecked, postInfoEntry, step]);
 
   const sortedItems = useMemo(() => {
     if (discoverySort === "PRICE_ASC") {
@@ -981,7 +1006,7 @@ export default function StoreFlowClient({ storeId }: StoreFlowClientProps) {
     setOkamiNotice(null);
     setOkamiVisualState("thinking");
     void emitTelemetry(gateToken, "okami_ask");
-    const remote = await requestOkamiAnswer(gateToken, q);
+    const remote = await requestOkamiAnswer(gateToken, q, okamiMode);
     const result = remote.status === "ok" ? remote.answer : answerOkamiPrompt(q);
     const source: "api" | "fallback" = remote.status === "ok" ? "api" : "fallback";
     if (remote.status === "ok") {
@@ -1777,7 +1802,7 @@ function getRankedDrinksForFood(food: MenuItem, items: MenuItem[], pairingsByFoo
 function describePairingForItem(
   food: MenuItem,
   items: MenuItem[],
-  locale: LocaleKey,
+  locale: GuestLocale,
   pairingsByFood?: Record<string, string[]>
 ): string | null {
   if (food.source !== "food") {
@@ -1795,7 +1820,7 @@ function describePairingForItem(
   return `${best.name.replace("[Drink] ", "")} (score:${score}, ${PAIRING_RATIONALE_LABEL[locale]}:${pairingReason(food, best, locale)})`;
 }
 
-function describeBestPairing(items: MenuItem[], locale: LocaleKey, pairingsByFood?: Record<string, string[]>): string | null {
+function describeBestPairing(items: MenuItem[], locale: GuestLocale, pairingsByFood?: Record<string, string[]>): string | null {
   const foods = items.filter((item) => item.source === "food");
   if (foods.length === 0) {
     return pickBestPairing(items);
@@ -1812,7 +1837,7 @@ function describeBestPairing(items: MenuItem[], locale: LocaleKey, pairingsByFoo
 function describeTopPairingsForItem(
   food: MenuItem,
   items: MenuItem[],
-  locale: LocaleKey,
+  locale: GuestLocale,
   pairingsByFood?: Record<string, string[]>
 ): string[] {
   if (food.source !== "food") {
@@ -1827,7 +1852,7 @@ function describeTopPairingsForItem(
     .map((row) => `${row.drink.name.replace("[Drink] ", "")}(${row.score}, ${pairingReason(food, row.drink, locale)})`);
 }
 
-function pairingReason(food: MenuItem, drink: MenuItem, locale: LocaleKey): string {
+function pairingReason(food: MenuItem, drink: MenuItem, locale: GuestLocale): string {
   const foodFlavor = extractTagValue(food.rawTags, "flavor");
   const drinkFlavor = extractTagValue(drink.rawTags, "flavor");
   const foodTemp = extractTagValue(food.rawTags, "temp");
@@ -1845,7 +1870,7 @@ function pairingReason(food: MenuItem, drink: MenuItem, locale: LocaleKey): stri
   return reasons.join("+");
 }
 
-function moodNarrative(locale: LocaleKey, mood: Mood | null, basicListMode: boolean): string {
+function moodNarrative(locale: GuestLocale, mood: Mood | null, basicListMode: boolean): string {
   if (basicListMode) {
     if (locale === "ja") return "Basic list mode: 画像と価格を優先表示します。";
     if (locale === "fr") return "Mode basique: image et prix en priorite.";
@@ -1876,7 +1901,7 @@ function moodNarrative(locale: LocaleKey, mood: Mood | null, basicListMode: bool
   return "Mood not selected.";
 }
 
-function formatSouvenirStamp(locale: LocaleKey, mood: Mood | null): string {
+function formatSouvenirStamp(locale: GuestLocale, mood: Mood | null): string {
   const dt = new Date().toISOString().slice(0, 16).replace("T", " ");
   if (locale === "ja") {
     return `記録: ${dt} / Mood: ${mood ?? "-"}`;

@@ -1,5 +1,57 @@
 import { expect, test } from "@playwright/test";
 
+async function mockGateAndBundle(page: import("@playwright/test").Page, storeId: string) {
+  await page.route(`**/api/gate?storeId=${storeId}`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        allowed: true,
+        token: "token-for-e2e",
+        exp: Math.floor(Date.now() / 1000) + 600,
+        paymentStatus: "PAID"
+      })
+    });
+  });
+  await page.route(`**/api/storeBundle?storeId=${storeId}`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        paymentStatus: "PAID",
+        store: {
+          liabilityAccepted: { allergy: true, religion: true }
+        },
+        menuItems: [{ id: "ramen", name: "濃厚とんこつラーメン", price: 980, tags: ["HUNGRY"] }],
+        drinks: [{ id: "cola", name: "クラフトコーラ", price: 540, tags: ["RELAX"] }]
+      })
+    });
+  });
+  await page.route("**/api/telemetry", async (route) => {
+    await route.fulfill({ status: 204, body: "" });
+  });
+}
+
+async function mockBillingCheckout(
+  page: import("@playwright/test").Page,
+  response: { checkoutRequired: boolean; checkoutUrl?: string }
+) {
+  await page.route("**/api/billing/checkout", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        accepted: true,
+        mode: "GUEST_PAYS",
+        amountYen: 198,
+        idempotencyKey: "e2e-key",
+        checkoutRequired: response.checkoutRequired,
+        checkoutUrl: response.checkoutUrl
+      })
+    });
+  });
+}
+
 test("guest flow reaches SUMIMASEN", async ({ page }) => {
   const telemetryEvents: string[] = [];
 
@@ -174,7 +226,42 @@ test("guest respects lang query for initial locale", async ({ page }) => {
   await expect(page.getByText("Locale: FR / Payment: PAID")).toBeVisible();
 });
 
-test("guest awakening blocks unlock when liability setting is incomplete", async ({ page }) => {
+test("shops info requires explicit clickwrap before transition", async ({ page }) => {
+  await mockGateAndBundle(page, "test123");
+  await mockBillingCheckout(page, { checkoutRequired: false });
+  await page.goto("/shops/info/test123?lang=fr");
+  await expect(page.getByTestId("info-next-button")).toBeDisabled();
+  await page.getByTestId("info-consent-checkbox").check();
+  await page.getByTestId("info-next-button").click();
+  await expect(page).toHaveURL(/\/shops\/menu\/test123\?lang=(ja|en|fr|zh)/);
+  await expect(page.getByTestId("mood-hungry")).toBeVisible();
+});
+
+test("shops info redirects to checkout url when checkout is required", async ({ page }) => {
+  await mockGateAndBundle(page, "test123");
+  await mockBillingCheckout(page, {
+    checkoutRequired: true,
+    checkoutUrl: "/shops/menu/test123?lang=en&checkout=success&session_id=cs_test"
+  });
+  await page.goto("/shops/info/test123?lang=en");
+  await page.getByTestId("info-consent-checkbox").check();
+  await page.getByTestId("info-next-button").click();
+  await expect(page).toHaveURL(/\/shops\/menu\/test123\?lang=en&checkout=success&session_id=cs_test/);
+});
+
+test("shops menu normalizes legacy lang code to EN", async ({ page }) => {
+  await mockGateAndBundle(page, "test123");
+  await page.goto("/shops/menu/test123?lang=09");
+  await expect(page.getByText("Locale: EN / Payment: PAID")).toBeVisible();
+});
+
+test("shops menu stays on awakening when clickwrap session is missing", async ({ page }) => {
+  await mockGateAndBundle(page, "test123");
+  await page.goto("/shops/menu/test123?lang=en");
+  await expect(page.getByTestId("consent-checkbox")).toBeVisible();
+});
+
+test("guest awakening unlocks with explicit consent even when liability setting is incomplete", async ({ page }) => {
   await page.route("**/api/gate?storeId=test123", async (route) => {
     await route.fulfill({
       status: 200,
@@ -204,8 +291,9 @@ test("guest awakening blocks unlock when liability setting is incomplete", async
 
   await page.goto("/s/test123");
   await page.getByTestId("consent-checkbox").check();
-  await expect(page.getByTestId("consent-next-button")).toBeDisabled();
-  await expect(page.getByText("店舗側の免責設定が未完了")).toBeVisible();
+  await expect(page.getByTestId("consent-next-button")).toBeEnabled();
+  await page.getByTestId("consent-next-button").click();
+  await expect(page.getByTestId("mood-hungry")).toBeVisible();
 });
 
 test("basic list mode hides okami panel", async ({ page }) => {
@@ -475,6 +563,7 @@ test("okami uses API classification and blocks on SECURITY", async ({ page }) =>
 });
 
 test("okami shows api source label when API answer is used", async ({ page }) => {
+  let requestedMode: string | null = null;
   await page.route("**/api/gate?storeId=test123", async (route) => {
     await route.fulfill({
       status: 200,
@@ -500,6 +589,8 @@ test("okami shows api source label when API answer is used", async ({ page }) =>
     });
   });
   await page.route("**/api/okami/answer", async (route) => {
+    const body = route.request().postDataJSON() as { mode?: string } | null;
+    requestedMode = body?.mode ?? null;
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -514,13 +605,14 @@ test("okami shows api source label when API answer is used", async ({ page }) =>
     await route.fulfill({ status: 204, body: "" });
   });
 
-  await page.goto("/s/test123");
+  await page.goto("/s/test123?aiMode=robustness");
   await page.getByTestId("consent-checkbox").check();
   await page.getByTestId("consent-next-button").click();
   await page.getByTestId("mood-hungry").click();
   await page.getByTestId("okami-input").fill("wifi?");
   await page.getByTestId("okami-ask-button").click();
   await expect(page.getByText("[RULE/api]", { exact: false })).toBeVisible();
+  expect(requestedMode).toBe("robustness");
 });
 
 test("okami falls back to local classification when API is unavailable", async ({ page }) => {

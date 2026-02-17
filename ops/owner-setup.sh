@@ -76,9 +76,8 @@ if [ "${vars_json}" = "" ]; then
   fail "failed to read repository variables." "Run: gh variable set BASE_URL --body 'https://<host>' && gh variable set STORE_ID --body '<storeId>'"
 fi
 
-echo "${vars_json}" | node <<'NODE'
-const fs = require("node:fs");
-const input = fs.readFileSync(0, "utf8");
+VARS_JSON="${vars_json}" node <<'NODE'
+const input = process.env.VARS_JSON ?? "";
 
 function fail(message, next) {
   process.stderr.write(`ERROR: ${message}\n`);

@@ -216,7 +216,7 @@ function createGuestCheckoutPatch(amountYen: number, nowMs = Date.now()): StoreG
   };
 }
 
-export const billingWebhook = onRequest({ cors: false }, async (req, res) => {
+export const billingWebhook = onRequest({ cors: false, secrets: ["STRIPE_WEBHOOK_SECRET"] }, async (req, res) => {
   if (req.method !== "POST") {
     res.status(405).send("method_not_allowed");
     return;

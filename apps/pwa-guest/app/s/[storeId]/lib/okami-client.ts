@@ -10,7 +10,13 @@ export type OkamiRequestResult =
   | { status: "ok"; answer: OkamiAnswer }
   | { status: "rate_limited" | "unauthorized" | "unavailable" };
 
-export async function requestOkamiAnswer(token: string | null, prompt: string): Promise<OkamiRequestResult> {
+export type OkamiExecutionMode = "speed" | "robustness" | "scalability";
+
+export async function requestOkamiAnswer(
+  token: string | null,
+  prompt: string,
+  mode: OkamiExecutionMode = "speed"
+): Promise<OkamiRequestResult> {
   if (!token) {
     return { status: "unauthorized" };
   }
@@ -29,7 +35,7 @@ export async function requestOkamiAnswer(token: string | null, prompt: string): 
         "Content-Type": "application/json",
         Authorization: `Bearer ${token}`
       },
-      body: JSON.stringify({ prompt: trimmed }),
+      body: JSON.stringify({ prompt: trimmed, mode }),
       signal: controller.signal
     });
     if (!res.ok) {

@@ -27,6 +27,8 @@ fail() {
 mode="firebase"
 firebase_mode="functions"
 secret_name=""
+firebase_project="${PROJECT_ID:-}"
+gh_repo="${GH_REPO:-}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -89,19 +91,31 @@ clipboard_value="$(read_clipboard 2>/dev/null || true)"
 
 if [ "${mode}" = "both" ] || [ "${mode}" = "gh" ]; then
   command -v gh >/dev/null 2>&1 || fail "gh CLI is required for GitHub secret set."
-  printf "%s" "${clipboard_value}" | gh secret set "${secret_name}" >/dev/null
+  if [ -n "${gh_repo}" ]; then
+    printf "%s" "${clipboard_value}" | gh secret set "${secret_name}" --repo "${gh_repo}" >/dev/null
+  else
+    printf "%s" "${clipboard_value}" | gh secret set "${secret_name}" >/dev/null
+  fi
   echo "[ok] GitHub secret updated: ${secret_name}"
 fi
 
 set_firebase_secret_functions() {
   command -v firebase >/dev/null 2>&1 || fail "firebase CLI is required for Firebase secret set."
-  printf "%s" "${clipboard_value}" | firebase functions:secrets:set "${secret_name}" --data-file=- >/dev/null
+  if [ -n "${firebase_project}" ]; then
+    printf "%s" "${clipboard_value}" | firebase functions:secrets:set "${secret_name}" --project "${firebase_project}" --force --data-file=- >/dev/null
+  else
+    printf "%s" "${clipboard_value}" | firebase functions:secrets:set "${secret_name}" --force --data-file=- >/dev/null
+  fi
   echo "[ok] Firebase Functions secret updated: ${secret_name}"
 }
 
 set_firebase_secret_apphosting() {
   command -v firebase >/dev/null 2>&1 || fail "firebase CLI is required for Firebase secret set."
-  printf "%s" "${clipboard_value}" | firebase apphosting:secrets:set "${secret_name}" --data-file=- >/dev/null
+  if [ -n "${firebase_project}" ]; then
+    printf "%s" "${clipboard_value}" | firebase apphosting:secrets:set "${secret_name}" --project "${firebase_project}" --data-file=- >/dev/null
+  else
+    printf "%s" "${clipboard_value}" | firebase apphosting:secrets:set "${secret_name}" --data-file=- >/dev/null
+  fi
   echo "[ok] Firebase App Hosting secret updated: ${secret_name}"
 }
 

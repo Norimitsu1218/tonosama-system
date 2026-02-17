@@ -5,8 +5,10 @@ export default function HomePage() {
         <h1>TONOSAMA OS Guest PWA</h1>
         <p>
           Runtime Guest の入口です。店舗ページは
-          <code>/s/[storeId]</code>
-          でアクセスします。
+          <code>/shops/info/[storeHash]</code>
+          から入り、同意後に
+          <code>/shops/menu/[storeHash]</code>
+          へ進みます。
         </p>
         <p>
           サンプル確認は

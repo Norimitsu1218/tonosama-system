@@ -18,8 +18,12 @@
     "test:functions": "npm run test --workspace @tonosama/functions",
     "ci:guest:ssr": "npm run build && npm run typecheck:guest && npm run test:e2e:guest && npm run test:functions",
     "ops:ai:check": "sh ops/check-ai-stack.sh",
+    "ops:new:project": "sh ops/new-project.sh",
     "ops:geo:launch": "sh ops/geo-launch.sh",
     "ops:royal:onboarding": "sh ops/royal-onboarding.sh",
+    "ops:bootstrap": "sh ops/bootstrap.sh",
+    "ops:autopilot": "sh ops/autopilot.sh",
+    "ops:stripe:press1": "sh ops/stripe-press1.sh",
     "ops:secret:clipboard": "sh scripts/set-secret-from-clipboard.sh",
     "ops:secret:press1": "sh scripts/apply-secret-on-1.sh",
     "ops:secrets:setup": "sh ops/setup-required-secrets.sh"

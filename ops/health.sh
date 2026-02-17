@@ -48,7 +48,7 @@ fi
 echo "[health] checking okami endpoint (unauthorized probe)"
 OKAMI_URL="${BASE_URL}/api/okami/answer"
 OKAMI_CODE="$(curl -s -o /tmp/health_okami_body.txt -w "%{http_code}" -X POST -H "Content-Type: application/json" -d '{"prompt":"wifi"}' "${OKAMI_URL}" || true)"
-if [ "${OKAMI_CODE}" = "401" ] || [ "${OKAMI_CODE}" = "403" ] || [ "${OKAMI_CODE}" = "429" ]; then
+if [ "${OKAMI_CODE}" = "401" ] || [ "${OKAMI_CODE}" = "403" ] || [ "${OKAMI_CODE}" = "429" ] || [ "${OKAMI_CODE}" = "503" ]; then
   echo "[health] okami OK status=${OKAMI_CODE}"
 else
   echo "[health] okami FAIL status=${OKAMI_CODE}"

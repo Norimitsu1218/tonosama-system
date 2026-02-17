@@ -254,6 +254,11 @@ Guest Runtime no longer reads Firestore directly. It uses Functions APIs only:
 - Guest runtime launch examples:
 `/s/<storeId>?mock=1`
 `/s/<storeId>?lang=ja|en|fr|zh`
+`/shops/info/<storeId>?lang=ja|en|fr|zh` (pre-payment entry with explicit clickwrap)
+`/shops/menu/<storeId>?lang=ja|en|fr|zh` (post-consent experience route)
+  - legacy `lang=09` is normalized to `en`
+  - when clickwrap session exists (from `/shops/info`), `/shops/menu` auto-advances to Mood
+  - info CTA calls `/api/billing/checkout` (idempotent) and redirects only on accepted checkout result
 - Discovery runtime controls:
   - sort: Mood / Price / Name
   - fallback recovery: `Retry Store Data`
@@ -271,6 +276,17 @@ Guest Runtime no longer reads Firestore directly. It uses Functions APIs only:
 - Royal onboarding launcher (geo bootstrap + gate smoke + next actions):
 `OWNER_API_TOKEN=<token> LAT=35.6764 LNG=139.6500 BASE_URL=https://apicius-owner.web.app npm run ops:royal:onboarding`
   - SSOT doc: `docs/royal-onboarding-ssot.md`
+- One-command bootstrap for repeated project setup (GitHub vars/secrets + Firebase secrets):
+`cp .env.bootstrap.example .env.bootstrap`
+`npm run ops:bootstrap` (dry-run)
+`DRY_RUN=0 npm run ops:bootstrap` (apply)
+  - shared global env file is also supported: `~/.tonosama/bootstrap.env`
+- New project full automation (create repo from template + clone + bootstrap):
+`NEW_REPO=<repo-name> PROJECT_ID=<gcp-project-id> npm run ops:new:project`
+  - apply immediately: `NEW_REPO=<repo-name> PROJECT_ID=<gcp-project-id> DRY_RUN=0 npm run ops:new:project`
+  - includes: hosting site create, target apply, `.firebaserc` mapping, bootstrap, first deploy, health check
+  - optional skip deploy: `DO_FIRST_DEPLOY=0`
+  - auto commit/push bootstrap artifacts (default on): `AUTO_COMMIT=1 AUTO_PUSH=1`
 - Telemetry daily counters (Firestore):
 `STORE_ID=<storeId> DAY=<yyyymmdd> node --input-type=module -e "import {initializeApp,applicationDefault} from 'firebase-admin/app'; import {getFirestore} from 'firebase-admin/firestore'; initializeApp({credential: applicationDefault()}); const db=getFirestore(); const id=\`\${process.env.STORE_ID}_\${process.env.DAY}\`; const snap=await db.collection('telemetry_daily').doc(id).get(); console.log(JSON.stringify(snap.data() ?? {}, null, 2)); process.exit(0);"`
 - Owner local env:
@@ -299,12 +315,21 @@ Guest Runtime no longer reads Firestore directly. It uses Functions APIs only:
 - Stripe manual setup links are in `docs/stripe-secret-setup-links.md`.
 - Stripe setup launcher:
 `PROJECT_ID=<PROJECT_ID> ORG=<ORG> REPO=<REPO> HOST=<HOST> OPEN=1 sh ops/open-stripe-setup-links.sh`
+- Clipboard + press-1 Stripe secret apply with auto deploy:
+`PROJECT_ID=<PROJECT_ID> npm run ops:stripe:press1 -- STRIPE_WEBHOOK_SECRET`
+  - also supports: `STRIPE_SECRET_KEY`, `BILLING_SUCCESS_URL`, `BILLING_CANCEL_URL`
+- Full AI autopilot (preflight + Stripe secret check + billing deploy + health + signed webhook smoke):
+`PROJECT_ID=<PROJECT_ID> BASE_URL=https://<PROJECT_ID>.web.app STORE_ID=test123 npm run ops:autopilot`
+  - `PROJECT_ID` is optional if set in `~/.tonosama/bootstrap.env`
 - Owner billing panel includes:
   - totals table (`checkout_count`, `checkout_amount`, `avg_amount`)
   - warning when avg amount is below threshold
   - `7d vs 30d` billing delta line
 - Okami answer endpoint:
   - `POST /api/okami/answer` with gate bearer token
+  - optional body key `mode`: `speed | robustness | scalability`
+  - model policy: `SECURITY` or `robustness` uses `gemini-2.5-pro`; others use `gemini-2.5-flash`
+  - guest runtime hint: `/s/<storeId>?aiMode=speed|robustness|scalability`
   - runtime falls back to local classifier when API is unavailable
 - Telemetry includes `okami_ask`, `okami_api`, `okami_blocked`, `okami_fallback`, `okami_rate_limited` aggregate counters (no PII).
 
