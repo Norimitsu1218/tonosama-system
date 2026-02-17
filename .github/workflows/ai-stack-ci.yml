@@ -2,9 +2,9 @@ name: ai-stack-ci
 
 on:
   pull_request:
-    branches: [main, master]
+    branches: [main-v2]
   push:
-    branches: [main, master]
+    branches: [main-v2]
 
 jobs:
   verify:
@@ -14,9 +14,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: "npm"
       - run: npm ci
       - run: npm run typecheck:guest
       - run: npm run test:functions
-

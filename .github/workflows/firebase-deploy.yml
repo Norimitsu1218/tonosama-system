@@ -2,7 +2,7 @@ name: Firebase Deploy
 
 on:
   push:
-    branches: ["main"]
+    branches: ["main-v2"]
     paths:
       - "apps/pwa-guest/**"
       - "functions/**"
@@ -25,7 +25,7 @@ concurrency:
 
 jobs:
   deploy:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main-v2'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: production

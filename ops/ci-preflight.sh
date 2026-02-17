@@ -311,10 +311,10 @@ NODE
 
 echo "CI preflight: checking deploy workflow trigger safety"
 if rg -n "pull_request" .github/workflows/firebase-deploy.yml >/dev/null 2>&1; then
-  fail "firebase-deploy workflow must not run on pull_request." "Restrict trigger to push on main only."
+  fail "firebase-deploy workflow must not run on pull_request." "Restrict trigger to push on main-v2 only."
 fi
-if ! rg -n 'branches:\s*\["main"\]' .github/workflows/firebase-deploy.yml >/dev/null 2>&1; then
-  fail "firebase-deploy workflow is not pinned to main branch push." "Set on.push.branches to [\"main\"]."
+if ! rg -n 'branches:\s*\["main-v2"\]' .github/workflows/firebase-deploy.yml >/dev/null 2>&1; then
+  fail "firebase-deploy workflow is not pinned to main-v2 branch push." "Set on.push.branches to [\"main-v2\"]."
 fi
 if ! rg -n "google-github-actions/auth@v2" .github/workflows/firebase-deploy.yml >/dev/null 2>&1; then
   fail "firebase-deploy workflow is missing OIDC auth step." "Add google-github-actions/auth@v2 before deploy step."

@@ -7,6 +7,7 @@ GH_REPO="${GH_REPO:-tonosama-system}"
 POOL_ID="${POOL_ID:-gh-pool-tonosama}"
 PROVIDER_ID="${PROVIDER_ID:-gh-provider-tonosama}"
 SA_NAME="${SA_NAME:-gh-deploy-tonosama}"
+DEPLOY_BRANCH="${DEPLOY_BRANCH:-main-v2}"
 
 if [ "$PROJECT_ID" = "" ] || [ "$GH_ORG" = "" ]; then
   echo "Usage: PROJECT_ID=<gcp-project-id> GH_ORG=<github-org> [GH_REPO=tonosama-system] sh ops/oidc-apply.sh" >&2
@@ -29,7 +30,7 @@ gcloud iam workload-identity-pools providers create-oidc "$PROVIDER_ID" \\
   --display-name="GitHub Actions provider (tonosama)" \\
   --issuer-uri="https://token.actions.githubusercontent.com" \\
   --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.ref=assertion.ref" \\
-  --attribute-condition="attribute.repository=='${GH_ORG}/${GH_REPO}' && attribute.ref=='refs/heads/main'" || true
+  --attribute-condition="attribute.repository=='${GH_ORG}/${GH_REPO}' && attribute.ref=='refs/heads/${DEPLOY_BRANCH}'" || true
 
 gcloud iam service-accounts create "$SA_NAME" --display-name="GitHub deploy SA (tonosama)" || true
 gcloud iam service-accounts add-iam-policy-binding "$SA_EMAIL" \\
