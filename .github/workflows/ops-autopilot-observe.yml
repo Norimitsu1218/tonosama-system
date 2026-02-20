@@ -260,7 +260,10 @@ jobs:
           WARN_RUNTIME_DRIFT_COUNT="$(grep -c '^WARN_RUNTIME_DRIFT$' "$WARN_CATEGORIES" || true)"
           WARN_UNKNOWN_COUNT="$(grep -c '^WARN_UNKNOWN$' "$WARN_CATEGORIES" || true)"
           WARN_TOTAL="$((WARN_TTL_COUNT + WARN_EDITOR_OWNER_COUNT + WARN_OPTIONAL_SECRET_EXTRA_COUNT + WARN_REQUIRED_SECRET_MISSING_COUNT + WARN_RUNTIME_DRIFT_COUNT + WARN_UNKNOWN_COUNT))"
-          ERROR_TOTAL="$(wc -l < "$FAIL_REASONS" | tr -d ' ')"
+          ERROR_SECRET_REQUIRED_MISSING_COUNT="$(grep -c '^ERROR_SECRET_REQUIRED_MISSING$' "$FAIL_CATEGORIES" || true)"
+          ERROR_RUNTIME_OR_OBSERVE_COUNT="$(grep -c '^ERROR_RUNTIME_OR_OBSERVE$' "$FAIL_CATEGORIES" || true)"
+          ERROR_UNKNOWN_COUNT="$(grep -c '^ERROR_UNKNOWN$' "$FAIL_CATEGORIES" || true)"
+          ERROR_TOTAL="$((ERROR_SECRET_REQUIRED_MISSING_COUNT + ERROR_RUNTIME_OR_OBSERVE_COUNT + ERROR_UNKNOWN_COUNT))"
 
           status="OK"
           if [ "$fail" -eq 1 ]; then
@@ -268,6 +271,95 @@ jobs:
           elif [ "$warn" -eq 1 ]; then
             status="WARN"
           fi
+
+          jq -n \
+            --arg status "$status" \
+            --arg run_id "${GITHUB_RUN_ID}" \
+            --argjson warn_total "$WARN_TOTAL" \
+            --argjson error_total "$ERROR_TOTAL" \
+            --argjson warn_ttl "$WARN_TTL_COUNT" \
+            --argjson warn_editor_owner "$WARN_EDITOR_OWNER_COUNT" \
+            --argjson warn_optional_secret_extra "$WARN_OPTIONAL_SECRET_EXTRA_COUNT" \
+            --argjson warn_required_secret_missing "$WARN_REQUIRED_SECRET_MISSING_COUNT" \
+            --argjson warn_runtime_drift "$WARN_RUNTIME_DRIFT_COUNT" \
+            --argjson warn_unknown "$WARN_UNKNOWN_COUNT" \
+            --argjson error_secret_required_missing "$ERROR_SECRET_REQUIRED_MISSING_COUNT" \
+            --argjson error_runtime_or_observe "$ERROR_RUNTIME_OR_OBSERVE_COUNT" \
+            --argjson error_unknown "$ERROR_UNKNOWN_COUNT" \
+            '
+            {
+              status: $status,
+              run_id: $run_id,
+              counts: {
+                warn: $warn_total,
+                fail: $error_total
+              },
+              warn_by_category: {
+                WARN_TTL: $warn_ttl,
+                WARN_EDITOR_OWNER: $warn_editor_owner,
+                WARN_OPTIONAL_SECRET_EXTRA: $warn_optional_secret_extra,
+                WARN_REQUIRED_SECRET_MISSING: $warn_required_secret_missing,
+                WARN_RUNTIME_DRIFT: $warn_runtime_drift,
+                WARN_UNKNOWN: $warn_unknown
+              },
+              fail_by_category: {
+                ERROR_SECRET_REQUIRED_MISSING: $error_secret_required_missing,
+                ERROR_RUNTIME_OR_OBSERVE: $error_runtime_or_observe,
+                ERROR_UNKNOWN: $error_unknown
+              }
+            }
+            ' > "$OUT/metrics.json"
+
+          jq '
+            .actions = (
+              [
+                {category:"WARN_TTL", count:(.warn_by_category.WARN_TTL // 0), action_class:"monitor", priority:"P2", owner:"ops", due_hint:"before_next_rotation"},
+                {category:"WARN_EDITOR_OWNER", count:(.warn_by_category.WARN_EDITOR_OWNER // 0), action_class:"ignore", priority:"P3", owner:"none", due_hint:null},
+                {category:"WARN_OPTIONAL_SECRET_EXTRA", count:(.warn_by_category.WARN_OPTIONAL_SECRET_EXTRA // 0), action_class:"monitor", priority:"P2", owner:"ops", due_hint:"next_iam_cycle"},
+                {category:"WARN_REQUIRED_SECRET_MISSING", count:(.warn_by_category.WARN_REQUIRED_SECRET_MISSING // 0), action_class:"owner_action", priority:"P1", owner:"platform", due_hint:"same_day"},
+                {category:"WARN_RUNTIME_DRIFT", count:(.warn_by_category.WARN_RUNTIME_DRIFT // 0), action_class:"owner_action", priority:"P1", owner:"platform", due_hint:"immediate"},
+                {category:"WARN_UNKNOWN", count:(.warn_by_category.WARN_UNKNOWN // 0), action_class:"owner_action", priority:"P1", owner:"platform", due_hint:"same_day"},
+                {category:"ERROR_RUNTIME_OR_OBSERVE", count:(.fail_by_category.ERROR_RUNTIME_OR_OBSERVE // 0), action_class:"block", priority:"P0", owner:"platform", due_hint:"immediate"},
+                {category:"ERROR_SECRET_REQUIRED_MISSING", count:(.fail_by_category.ERROR_SECRET_REQUIRED_MISSING // 0), action_class:"block", priority:"P0", owner:"platform", due_hint:"immediate"},
+                {category:"ERROR_UNKNOWN", count:(.fail_by_category.ERROR_UNKNOWN // 0), action_class:"block", priority:"P0", owner:"platform", due_hint:"immediate"}
+              ] | map(select(.count > 0))
+            )
+          ' "$OUT/metrics.json" > "$OUT/metrics.tmp.json"
+          mv "$OUT/metrics.tmp.json" "$OUT/metrics.json"
+
+          PREV_RUN_ID="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ops-autopilot-observe.yml/runs?per_page=15" \
+            | jq -r --arg cur "${GITHUB_RUN_ID}" '.workflow_runs[] | select((.id|tostring) != $cur and .status == "completed") | .id' \
+            | head -n1)"
+          echo "${PREV_RUN_ID:-}" > "$OUT/previous-run-id.txt"
+          if [ -n "${PREV_RUN_ID:-}" ]; then
+            if gh run download "$PREV_RUN_ID" --name "ops-autopilot-observe-${PREV_RUN_ID}" -D "$OUT/previous" >/dev/null 2>&1; then
+              prev_metrics="$(find "$OUT/previous" -name metrics.json -type f | head -n1 || true)"
+              if [ -n "${prev_metrics:-}" ] && [ -f "$prev_metrics" ]; then
+                jq -n \
+                  --slurpfile prev "$prev_metrics" \
+                  --slurpfile curr "$OUT/metrics.json" \
+                  '
+                  def nz($obj): ($obj | to_entries | map(select(.value > 0) | .key));
+                  {
+                    current_status: ($curr[0].status // "UNKNOWN"),
+                    previous_status: ($prev[0].status // "UNKNOWN"),
+                    status_delta: (($prev[0].status // "UNKNOWN") + " -> " + ($curr[0].status // "UNKNOWN")),
+                    new_warn_categories: ((nz($curr[0].warn_by_category) - nz($prev[0].warn_by_category))),
+                    resolved_warn_categories: ((nz($prev[0].warn_by_category) - nz($curr[0].warn_by_category))),
+                    new_fail_categories: ((nz($curr[0].fail_by_category) - nz($prev[0].fail_by_category))),
+                    resolved_fail_categories: ((nz($prev[0].fail_by_category) - nz($curr[0].fail_by_category)))
+                  }
+                  ' > "$OUT/metrics-diff.json"
+              else
+                jq -n '{diff_skipped:true, reason:"previous_metrics_not_found"}' > "$OUT/metrics-diff.json"
+              fi
+            else
+              jq -n '{diff_skipped:true, reason:"previous_artifact_download_failed"}' > "$OUT/metrics-diff.json"
+            fi
+          else
+            jq -n '{diff_skipped:true, reason:"previous_run_not_found"}' > "$OUT/metrics-diff.json"
+          fi
+
           echo "$status" > "$OUT/status.txt"
 
           {
@@ -309,24 +401,56 @@ jobs:
             fi
             echo
             echo "## Counters"
-            echo "- WARN total: $WARN_TOTAL"
-            echo "- ERROR total: $ERROR_TOTAL"
-            echo "- WARN_TTL: $WARN_TTL_COUNT"
-            echo "- WARN_EDITOR_OWNER: $WARN_EDITOR_OWNER_COUNT"
-            echo "- WARN_OPTIONAL_SECRET_EXTRA: $WARN_OPTIONAL_SECRET_EXTRA_COUNT"
-            echo "- WARN_REQUIRED_SECRET_MISSING: $WARN_REQUIRED_SECRET_MISSING_COUNT"
-            echo "- WARN_RUNTIME_DRIFT: $WARN_RUNTIME_DRIFT_COUNT"
-            echo "- WARN_UNKNOWN: $WARN_UNKNOWN_COUNT"
+            jq -r '
+              "- WARN total: \(.counts.warn // 0)\n" +
+              "- ERROR total: \(.counts.fail // 0)\n" +
+              "- WARN_TTL: \(.warn_by_category.WARN_TTL // 0)\n" +
+              "- WARN_EDITOR_OWNER: \(.warn_by_category.WARN_EDITOR_OWNER // 0)\n" +
+              "- WARN_OPTIONAL_SECRET_EXTRA: \(.warn_by_category.WARN_OPTIONAL_SECRET_EXTRA // 0)\n" +
+              "- WARN_REQUIRED_SECRET_MISSING: \(.warn_by_category.WARN_REQUIRED_SECRET_MISSING // 0)\n" +
+              "- WARN_RUNTIME_DRIFT: \(.warn_by_category.WARN_RUNTIME_DRIFT // 0)\n" +
+              "- WARN_UNKNOWN: \(.warn_by_category.WARN_UNKNOWN // 0)\n" +
+              "- ERROR_RUNTIME_OR_OBSERVE: \(.fail_by_category.ERROR_RUNTIME_OR_OBSERVE // 0)\n" +
+              "- ERROR_SECRET_REQUIRED_MISSING: \(.fail_by_category.ERROR_SECRET_REQUIRED_MISSING // 0)\n" +
+              "- ERROR_UNKNOWN: \(.fail_by_category.ERROR_UNKNOWN // 0)"
+            ' "$OUT/metrics.json"
             echo
             echo "## Machine Metrics"
-            echo "METRIC WARN_TOTAL=$WARN_TOTAL"
-            echo "METRIC ERROR_TOTAL=$ERROR_TOTAL"
-            echo "METRIC WARN_TTL=$WARN_TTL_COUNT"
-            echo "METRIC WARN_EDITOR_OWNER=$WARN_EDITOR_OWNER_COUNT"
-            echo "METRIC WARN_OPTIONAL_SECRET_EXTRA=$WARN_OPTIONAL_SECRET_EXTRA_COUNT"
-            echo "METRIC WARN_REQUIRED_SECRET_MISSING=$WARN_REQUIRED_SECRET_MISSING_COUNT"
-            echo "METRIC WARN_RUNTIME_DRIFT=$WARN_RUNTIME_DRIFT_COUNT"
-            echo "METRIC WARN_UNKNOWN=$WARN_UNKNOWN_COUNT"
+            jq -r '
+              "METRIC WARN_TOTAL=\(.counts.warn // 0)\n" +
+              "METRIC ERROR_TOTAL=\(.counts.fail // 0)\n" +
+              "METRIC WARN_TTL=\(.warn_by_category.WARN_TTL // 0)\n" +
+              "METRIC WARN_EDITOR_OWNER=\(.warn_by_category.WARN_EDITOR_OWNER // 0)\n" +
+              "METRIC WARN_OPTIONAL_SECRET_EXTRA=\(.warn_by_category.WARN_OPTIONAL_SECRET_EXTRA // 0)\n" +
+              "METRIC WARN_REQUIRED_SECRET_MISSING=\(.warn_by_category.WARN_REQUIRED_SECRET_MISSING // 0)\n" +
+              "METRIC WARN_RUNTIME_DRIFT=\(.warn_by_category.WARN_RUNTIME_DRIFT // 0)\n" +
+              "METRIC WARN_UNKNOWN=\(.warn_by_category.WARN_UNKNOWN // 0)\n" +
+              "METRIC ERROR_RUNTIME_OR_OBSERVE=\(.fail_by_category.ERROR_RUNTIME_OR_OBSERVE // 0)\n" +
+              "METRIC ERROR_SECRET_REQUIRED_MISSING=\(.fail_by_category.ERROR_SECRET_REQUIRED_MISSING // 0)\n" +
+              "METRIC ERROR_UNKNOWN=\(.fail_by_category.ERROR_UNKNOWN // 0)"
+            ' "$OUT/metrics.json"
+            echo
+            echo "## Actions"
+            jq -r '
+              if (.actions | length) == 0 then
+                "- (none)"
+              else
+                .actions[] | "- [\(.priority)] \(.category): \(.action_class) (owner=\(.owner), due=\(.due_hint // "none"))"
+              end
+            ' "$OUT/metrics.json"
+            echo
+            echo "## Diff vs Previous"
+            jq -r '
+              if .diff_skipped then
+                "- diff_skipped: \(.reason)"
+              else
+                "- status_delta: \(.status_delta)\n" +
+                "- new_warn_categories: \((.new_warn_categories | join(", ")) // "(none)")\n" +
+                "- resolved_warn_categories: \((.resolved_warn_categories | join(", ")) // "(none)")\n" +
+                "- new_fail_categories: \((.new_fail_categories | join(", ")) // "(none)")\n" +
+                "- resolved_fail_categories: \((.resolved_fail_categories | join(", ")) // "(none)")"
+              end
+            ' "$OUT/metrics-diff.json"
             echo
             echo "## Next CLI"
             echo "1. gcloud run services describe $SERVICE --project $PROJECT_ID --region $REGION --format='value(spec.template.spec.serviceAccountName)'"
