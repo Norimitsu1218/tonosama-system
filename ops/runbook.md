@@ -229,6 +229,8 @@
   - project-level `secretAccessor` bindings still exist.
   - one of required TTL entries (`nonces`, `partner_nonces`, `owner_rate_limit`) is missing.
 - Summary must include explicit fail reasons and warn reasons.
+- IAM pass2 baseline command:
+`PROJECT_ID=apicius-6bcae REGION=asia-northeast1 SERVICE=ssrapicius6bcae sh ops/iam-pass2-audit.sh`
 
 ## S-21 Runtime Track
 

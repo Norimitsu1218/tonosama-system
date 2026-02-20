@@ -45,3 +45,18 @@
   - run URL of observe workflow,
   - smoke result,
   - verify-hash result.
+
+## WIF Ceiling
+
+- WIF principal must remain read-only for observe jobs.
+- Allowed roles for observe principal:
+  - `roles/run.viewer`
+  - `roles/cloudfunctions.viewer`
+  - `roles/viewer`
+- Any role outside this list requires explicit review and evidence.
+
+## Notification Redundancy
+
+- Artifact upload is mandatory for each observe run.
+- Primary signal: GitHub Actions run conclusion.
+- Secondary signal: run URL + artifact link stored in ops evidence.
