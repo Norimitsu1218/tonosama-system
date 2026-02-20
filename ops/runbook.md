@@ -272,6 +272,13 @@
   - `effective_priority` upgraded
   - `due_over` changed to `true`
   - status transition `WARN -> FAIL`
+- Promotion classes are fixed:
+  - `draft_only`
+  - `auto_issue` (`effective_priority>=P1 && recurrence_count>=2` or `due_over=true`)
+  - `block_human` (`action_class=block`)
+- Current automation scope:
+  - Issue: auto-create for `auto_issue`
+  - PR: draft-only (no auto-create)
 
 ## S-21 Runtime Track
 

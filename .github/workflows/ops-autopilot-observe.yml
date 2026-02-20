@@ -8,6 +8,7 @@ on:
 permissions:
   contents: read
   id-token: write
+  issues: write
 
 concurrency:
   group: ops-autopilot-observe-${{ github.ref }}
@@ -490,12 +491,19 @@ jobs:
           DRAFT_PRS_DIR="$OUT/drafts/prs"
           mkdir -p "$DRAFT_ISSUES_DIR" "$DRAFT_PRS_DIR"
           CURRENT_DRAFT_INDEX="$OUT/drafts/draft-index.tsv"
+          AUTO_ISSUE_CANDIDATES="$OUT/drafts/issue-auto-candidates.tsv"
           : > "$CURRENT_DRAFT_INDEX"
+          : > "$AUTO_ISSUE_CANDIDATES"
           PREV_DRAFT_INDEX="$(find "$OUT/previous" -path '*/drafts/draft-index.tsv' -type f | head -n1 || true)"
           ISSUE_DRAFT_NEW=0
           ISSUE_DRAFT_SKIPPED_DEDUPE=0
           PR_DRAFT_NEW=0
           PR_DRAFT_SKIPPED_DEDUPE=0
+          ISSUE_AUTO_CANDIDATES=0
+          ISSUE_CREATED=0
+          ISSUE_SKIPPED_EXISTING=0
+          ISSUE_CREATE_FAILED=0
+          BLOCK_HUMAN_COUNT=0
 
           decode_field() {
             printf '%s' "$1" | base64 --decode | jq -r "$2"
@@ -529,12 +537,20 @@ jobs:
             count="$(decode_field "$row" '.count // 0')"
             recurrence="$(decode_field "$row" '.recurrence_count // 0')"
             dedupe_key="${category}|${owner}|${action_class}|${target}"
+            key_slug="$(printf '%s' "$dedupe_key" | tr -c 'a-zA-Z0-9_-' '_')"
 
             draft_slug="$(printf '%s' "${category}" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_' '_')"
-            issue_needed=0
+            promotion_class="draft_only"
             if [ "$action_class" = "block" ]; then
-              issue_needed=1
-            elif { [ "$effective_priority" = "P0" ] || [ "$effective_priority" = "P1" ]; } && [ "$recurrence" -ge 3 ]; then
+              promotion_class="block_human"
+            elif [ "$due_over" = "true" ]; then
+              promotion_class="auto_issue"
+            elif { [ "$effective_priority" = "P0" ] || [ "$effective_priority" = "P1" ]; } && [ "$recurrence" -ge 2 ]; then
+              promotion_class="auto_issue"
+            fi
+
+            issue_needed=0
+            if [ "$promotion_class" = "block_human" ] || [ "$promotion_class" = "auto_issue" ]; then
               issue_needed=1
             fi
 
@@ -582,6 +598,7 @@ jobs:
                   echo "- recurrence_count: $recurrence"
                   echo "- target: $target"
                   echo "- due_over: $due_over"
+                  echo "- promotion_class: $promotion_class"
                   echo "- owner: $owner"
                   echo "- due_hint: $due_hint"
                   echo "- run: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
@@ -595,6 +612,14 @@ jobs:
                   echo "- No automatic production change performed."
                 } > "$DRAFT_ISSUES_DIR/issue_${draft_slug}.md"
                 ISSUE_DRAFT_NEW=$((ISSUE_DRAFT_NEW + 1))
+                if [ "$promotion_class" = "auto_issue" ]; then
+                  ISSUE_AUTO_CANDIDATES=$((ISSUE_AUTO_CANDIDATES + 1))
+                  printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+                    "$dedupe_key" "$key_slug" "$category" "$effective_priority" "$recurrence" "$DRAFT_ISSUES_DIR/issue_${draft_slug}.md" \
+                    >> "$AUTO_ISSUE_CANDIDATES"
+                elif [ "$promotion_class" = "block_human" ]; then
+                  BLOCK_HUMAN_COUNT=$((BLOCK_HUMAN_COUNT + 1))
+                fi
               else
                 ISSUE_DRAFT_SKIPPED_DEDUPE=$((ISSUE_DRAFT_SKIPPED_DEDUPE + 1))
               fi
@@ -670,12 +695,32 @@ jobs:
           ISSUE_DRAFT_COUNT="$(find "$DRAFT_ISSUES_DIR" -type f -name '*.md' | wc -l | tr -d ' ')"
           PR_DRAFT_COUNT="$(find "$DRAFT_PRS_DIR" -type f -name '*.md' | wc -l | tr -d ' ')"
 
+          while IFS=$'\t' read -r candidate_key candidate_slug candidate_category candidate_priority candidate_recurrence candidate_draft; do
+            [ -z "${candidate_slug:-}" ] && continue
+            issue_title="[AUTO][${candidate_slug}] ${candidate_category} (${candidate_priority})"
+            existing_issue_id="$(gh issue list --state open --limit 100 --search "\"[AUTO][${candidate_slug}]\" in:title" --json number --jq '.[0].number' 2>/dev/null || true)"
+            if [ -n "${existing_issue_id:-}" ] && [ "${existing_issue_id}" != "null" ]; then
+              ISSUE_SKIPPED_EXISTING=$((ISSUE_SKIPPED_EXISTING + 1))
+              continue
+            fi
+            if gh issue create --title "$issue_title" --body-file "$candidate_draft" >/dev/null 2>&1; then
+              ISSUE_CREATED=$((ISSUE_CREATED + 1))
+            else
+              ISSUE_CREATE_FAILED=$((ISSUE_CREATE_FAILED + 1))
+            fi
+          done < "$AUTO_ISSUE_CANDIDATES"
+
           jq --argjson issue_drafts "$ISSUE_DRAFT_COUNT" \
              --argjson pr_drafts "$PR_DRAFT_COUNT" \
              --argjson issue_drafts_new "$ISSUE_DRAFT_NEW" \
              --argjson issue_drafts_skipped_dedupe "$ISSUE_DRAFT_SKIPPED_DEDUPE" \
              --argjson pr_drafts_new "$PR_DRAFT_NEW" \
-             --argjson pr_drafts_skipped_dedupe "$PR_DRAFT_SKIPPED_DEDUPE" '
+             --argjson pr_drafts_skipped_dedupe "$PR_DRAFT_SKIPPED_DEDUPE" \
+             --argjson issue_auto_candidates "$ISSUE_AUTO_CANDIDATES" \
+             --argjson issue_created "$ISSUE_CREATED" \
+             --argjson issue_skipped_existing "$ISSUE_SKIPPED_EXISTING" \
+             --argjson issue_create_failed "$ISSUE_CREATE_FAILED" \
+             --argjson block_human "$BLOCK_HUMAN_COUNT" '
             .drafts = {
               issue: $issue_drafts,
               pr: $pr_drafts,
@@ -684,8 +729,22 @@ jobs:
               pr_drafts_new: $pr_drafts_new,
               pr_drafts_skipped_dedupe: $pr_drafts_skipped_dedupe
             }
+            | .promotions = {
+              issue_auto_candidates: $issue_auto_candidates,
+              issue_created: $issue_created,
+              issue_skipped_existing: $issue_skipped_existing,
+              issue_create_failed: $issue_create_failed,
+              block_human: $block_human
+            }
           ' "$OUT/metrics.json" > "$OUT/metrics.tmp.json"
           mv "$OUT/metrics.tmp.json" "$OUT/metrics.json"
+
+          if [ "$ISSUE_CREATE_FAILED" -gt 0 ]; then
+            fail=1
+            echo "auto_issue_create_failed" >> "$FAIL_REASONS"
+            echo "ERROR_AUTOMATION" >> "$FAIL_CATEGORIES"
+            sort -u "$FAIL_CATEGORIES" -o "$FAIL_CATEGORIES"
+          fi
 
           {
             echo "# Draft Candidates"
@@ -696,6 +755,11 @@ jobs:
             echo "- issue_drafts_skipped_dedupe: $ISSUE_DRAFT_SKIPPED_DEDUPE"
             echo "- pr_drafts_new: $PR_DRAFT_NEW"
             echo "- pr_drafts_skipped_dedupe: $PR_DRAFT_SKIPPED_DEDUPE"
+            echo "- issue_auto_candidates: $ISSUE_AUTO_CANDIDATES"
+            echo "- issue_created: $ISSUE_CREATED"
+            echo "- issue_skipped_existing: $ISSUE_SKIPPED_EXISTING"
+            echo "- issue_create_failed: $ISSUE_CREATE_FAILED"
+            echo "- block_human: $BLOCK_HUMAN_COUNT"
             echo
             echo "## Issue Drafts"
             find "$DRAFT_ISSUES_DIR" -maxdepth 1 -type f -name '*.md' -print | sed 's#^#- #' || true
@@ -703,6 +767,40 @@ jobs:
             echo "## PR Drafts"
             find "$DRAFT_PRS_DIR" -maxdepth 1 -type f -name '*.md' -print | sed 's#^#- #' || true
           } > "$OUT/drafts/summary-actions.md"
+
+          WARN_TOTAL="$(wc -l < "$WARN_CATEGORIES" | tr -d ' ')"
+          ERROR_TOTAL="$(wc -l < "$FAIL_CATEGORIES" | tr -d ' ')"
+          ERROR_POLICY_GUARDRAIL_COUNT="$(grep -c '^ERROR_POLICY_GUARDRAIL$' "$FAIL_CATEGORIES" || true)"
+          ERROR_AUTOMATION_COUNT="$(grep -c '^ERROR_AUTOMATION$' "$FAIL_CATEGORIES" || true)"
+
+          status="OK"
+          if [ "$fail" -eq 1 ]; then
+            status="FAIL"
+          elif [ "$warn" -eq 1 ]; then
+            status="WARN"
+          fi
+
+          next_task_id="KEEP-MANUAL"
+          case "$status" in
+            OK) next_task_id="S-24-07" ;;
+            WARN) next_task_id="S-24-07" ;;
+            FAIL) next_task_id="BLOCK-TRIAGE" ;;
+          esac
+
+          jq --arg status "$status" \
+             --arg next_task_id "$next_task_id" \
+             --argjson warn_total "$WARN_TOTAL" \
+             --argjson error_total "$ERROR_TOTAL" \
+             --argjson error_policy_guardrail "$ERROR_POLICY_GUARDRAIL_COUNT" \
+             --argjson error_automation "$ERROR_AUTOMATION_COUNT" '
+            .status = $status
+            | .next_task_id = $next_task_id
+            | .counts.warn = $warn_total
+            | .counts.fail = $error_total
+            | .fail_by_category.ERROR_POLICY_GUARDRAIL = $error_policy_guardrail
+            | .fail_by_category.ERROR_AUTOMATION = $error_automation
+          ' "$OUT/metrics.json" > "$OUT/metrics.tmp.json"
+          mv "$OUT/metrics.tmp.json" "$OUT/metrics.json"
 
           echo "$status" > "$OUT/status.txt"
 
@@ -757,6 +855,7 @@ jobs:
               "- ERROR_RUNTIME_OR_OBSERVE: \(.fail_by_category.ERROR_RUNTIME_OR_OBSERVE // 0)\n" +
               "- ERROR_SECRET_REQUIRED_MISSING: \(.fail_by_category.ERROR_SECRET_REQUIRED_MISSING // 0)\n" +
               "- ERROR_POLICY_GUARDRAIL: \(.fail_by_category.ERROR_POLICY_GUARDRAIL // 0)\n" +
+              "- ERROR_AUTOMATION: \(.fail_by_category.ERROR_AUTOMATION // 0)\n" +
               "- ERROR_UNKNOWN: \(.fail_by_category.ERROR_UNKNOWN // 0)"
             ' "$OUT/metrics.json"
             echo
@@ -773,13 +872,19 @@ jobs:
               "METRIC ERROR_RUNTIME_OR_OBSERVE=\(.fail_by_category.ERROR_RUNTIME_OR_OBSERVE // 0)\n" +
               "METRIC ERROR_SECRET_REQUIRED_MISSING=\(.fail_by_category.ERROR_SECRET_REQUIRED_MISSING // 0)\n" +
               "METRIC ERROR_POLICY_GUARDRAIL=\(.fail_by_category.ERROR_POLICY_GUARDRAIL // 0)\n" +
+              "METRIC ERROR_AUTOMATION=\(.fail_by_category.ERROR_AUTOMATION // 0)\n" +
               "METRIC ERROR_UNKNOWN=\(.fail_by_category.ERROR_UNKNOWN // 0)\n" +
               "METRIC ISSUE_DRAFTS=\(.drafts.issue // 0)\n" +
               "METRIC PR_DRAFTS=\(.drafts.pr // 0)\n" +
               "METRIC ISSUE_DRAFTS_NEW=\(.drafts.issue_drafts_new // 0)\n" +
               "METRIC ISSUE_DRAFTS_SKIPPED_DEDUPE=\(.drafts.issue_drafts_skipped_dedupe // 0)\n" +
               "METRIC PR_DRAFTS_NEW=\(.drafts.pr_drafts_new // 0)\n" +
-              "METRIC PR_DRAFTS_SKIPPED_DEDUPE=\(.drafts.pr_drafts_skipped_dedupe // 0)"
+              "METRIC PR_DRAFTS_SKIPPED_DEDUPE=\(.drafts.pr_drafts_skipped_dedupe // 0)\n" +
+              "METRIC ISSUE_AUTO_CANDIDATES=\(.promotions.issue_auto_candidates // 0)\n" +
+              "METRIC ISSUE_CREATED=\(.promotions.issue_created // 0)\n" +
+              "METRIC ISSUE_SKIPPED_EXISTING=\(.promotions.issue_skipped_existing // 0)\n" +
+              "METRIC ISSUE_CREATE_FAILED=\(.promotions.issue_create_failed // 0)\n" +
+              "METRIC BLOCK_HUMAN=\(.promotions.block_human // 0)"
             ' "$OUT/metrics.json"
             echo
             echo "## Actions"
