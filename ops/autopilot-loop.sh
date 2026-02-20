@@ -13,6 +13,8 @@ run_id="unknown"
 out_dir=""
 metrics_path="none"
 summary_path="none"
+policy_rules_path="none"
+policy_version="unknown"
 
 retry_gh() {
   local max="${1:-3}"
@@ -154,25 +156,89 @@ if [[ -z "$metrics_path" ]]; then
   exit 2
 fi
 
-status="$(jq -r '.status // "UNKNOWN"' "$metrics_path" 2>/dev/null || echo UNKNOWN)"
-next_task="$(jq -r '.next_task_id // "KEEP-MANUAL"' "$metrics_path" 2>/dev/null || echo KEEP-MANUAL)"
-
-decision="BLOCK"
-case "$status" in
-  OK|PASS)
-    decision="CLOSE"
-    ;;
-  WARN)
-    decision="KEEP"
-    ;;
-  FAIL)
-    decision="BLOCK"
-    ;;
-esac
-
-if [[ "$decision" == "BLOCK" ]]; then
-  emit_result "$decision" "status_fail" "$next_task"
+policy_rules_path="$(find "$out_dir" -type f -name 'policy-rules.json' | head -n1 || true)"
+if [[ -z "$policy_rules_path" ]]; then
+  policy_rules_path="none"
+  emit_result "BLOCK" "policy_rules_missing" "BLOCK-TRIAGE"
   exit 2
 fi
 
-emit_result "$decision" "none" "$next_task"
+if ! jq -e '
+  type == "object"
+  and (.policy_version | type == "string")
+  and (.classification.warn_allowlist | type == "array")
+  and (.classification.fail_closed_categories | type == "array")
+  and (.promotions.dedupe_key | type == "string")
+  and (.retries.issue_create_max_attempts | type == "number")
+' "$policy_rules_path" >/dev/null 2>&1; then
+  emit_result "BLOCK" "policy_rules_invalid" "BLOCK-TRIAGE"
+  exit 2
+fi
+
+if ! jq -e '
+  type == "object"
+  and (.policy_version | type == "string")
+  and (.warn_by_category | type == "object")
+  and (.fail_by_category | type == "object")
+  and (.counts.warn | type == "number")
+  and (.counts.fail | type == "number")
+' "$metrics_path" >/dev/null 2>&1; then
+  emit_result "BLOCK" "metrics_invalid" "BLOCK-TRIAGE"
+  exit 2
+fi
+
+policy_version="$(jq -r '.policy_version' "$policy_rules_path" 2>/dev/null || echo unknown)"
+metrics_policy_version="$(jq -r '.policy_version // "missing"' "$metrics_path" 2>/dev/null || echo missing)"
+if [[ "$metrics_policy_version" != "$policy_version" ]]; then
+  emit_result "BLOCK" "policy_version_mismatch" "BLOCK-TRIAGE"
+  exit 2
+fi
+
+next_task="$(jq -r '.next_task_id // "KEEP-MANUAL"' "$metrics_path" 2>/dev/null || echo KEEP-MANUAL)"
+
+if ! jq -e --slurpfile p "$policy_rules_path" '
+  [(.warn_by_category // {} | to_entries[]? | select((.value|tonumber) > 0) | .key)] as $activeWarn
+  | ($p[0].classification.warn_allowlist + ["WARN_UNKNOWN"]) as $allowWarn
+  | (($activeWarn - $allowWarn) | length) == 0
+' "$metrics_path" >/dev/null 2>&1; then
+  emit_result "BLOCK" "unknown_warn_category" "$next_task"
+  exit 2
+fi
+
+if ! jq -e --slurpfile p "$policy_rules_path" '
+  [(.fail_by_category // {} | to_entries[]? | select((.value|tonumber) > 0) | .key)] as $activeFail
+  | ($p[0].classification.fail_closed_categories) as $allowFail
+  | (($activeFail - $allowFail) | length) == 0
+' "$metrics_path" >/dev/null 2>&1; then
+  emit_result "BLOCK" "unknown_fail_category" "$next_task"
+  exit 2
+fi
+
+fail_total="$(jq -r '.counts.fail // 0' "$metrics_path" 2>/dev/null || echo 0)"
+warn_total="$(jq -r '.counts.warn // 0' "$metrics_path" 2>/dev/null || echo 0)"
+if ! [[ "$fail_total" =~ ^[0-9]+$ ]]; then
+  fail_total=0
+fi
+if ! [[ "$warn_total" =~ ^[0-9]+$ ]]; then
+  warn_total=0
+fi
+
+decision="BLOCK"
+reason="unknown"
+if (( fail_total > 0 )); then
+  decision="BLOCK"
+  reason="fail_category_present"
+elif (( warn_total > 0 )); then
+  decision="KEEP"
+  reason="warn_category_present"
+else
+  decision="CLOSE"
+  reason="policy_pass"
+fi
+
+if [[ "$decision" == "BLOCK" ]]; then
+  emit_result "$decision" "$reason" "$next_task"
+  exit 2
+fi
+
+emit_result "$decision" "$reason" "$next_task"
