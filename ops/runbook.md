@@ -279,6 +279,10 @@
 - Current automation scope:
   - Issue: auto-create for `auto_issue`
   - PR: draft-only (no auto-create)
+- Auto-issue retry policy:
+  - max 3 attempts with exponential backoff
+  - retry only on `429` and `5xx`
+  - `4xx` fails immediately and is counted as `ERROR_AUTOMATION`
 
 ## S-21 Runtime Track
 

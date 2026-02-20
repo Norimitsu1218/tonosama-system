@@ -503,6 +503,10 @@ jobs:
           ISSUE_CREATED=0
           ISSUE_SKIPPED_EXISTING=0
           ISSUE_CREATE_FAILED=0
+          ISSUE_CREATE_RETRY_COUNT=0
+          ISSUE_CREATE_LATENCY_MS=0
+          ISSUE_CREATE_FAIL_REASONS_FILE="$OUT/drafts/issue-create-fail-reasons.txt"
+          : > "$ISSUE_CREATE_FAIL_REASONS_FILE"
           BLOCK_HUMAN_COUNT=0
 
           decode_field() {
@@ -517,6 +521,60 @@ jobs:
               P3) echo 3 ;;
               *) echo 9 ;;
             esac
+          }
+
+          is_retryable_http() {
+            case "$1" in
+              429|5??) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+
+          issue_create_with_retry() {
+            local issue_title="$1"
+            local issue_body_file="$2"
+            local issue_key="$3"
+            local attempt=1
+            local max_attempts=3
+            local sleep_sec=2
+            while [ "$attempt" -le "$max_attempts" ]; do
+              local start_ms end_ms elapsed_ms
+              local err_file payload_file body_text http_code fail_reason
+              err_file="$(mktemp)"
+              payload_file="$(mktemp)"
+              body_text="$(cat "$issue_body_file")"
+              jq -n --arg t "$issue_title" --arg b "$body_text" '{title:$t, body:$b}' > "$payload_file"
+              start_ms="$(date +%s%3N)"
+              if gh api -X POST "repos/${GITHUB_REPOSITORY}/issues" --input "$payload_file" >/dev/null 2>"$err_file"; then
+                end_ms="$(date +%s%3N)"
+                elapsed_ms=$((end_ms - start_ms))
+                ISSUE_CREATE_LATENCY_MS=$((ISSUE_CREATE_LATENCY_MS + elapsed_ms))
+                rm -f "$err_file" "$payload_file"
+                return 0
+              fi
+              end_ms="$(date +%s%3N)"
+              elapsed_ms=$((end_ms - start_ms))
+              ISSUE_CREATE_LATENCY_MS=$((ISSUE_CREATE_LATENCY_MS + elapsed_ms))
+              http_code="$(sed -n 's/.*(HTTP \([0-9][0-9][0-9]\)).*/\1/p' "$err_file" | head -n1 || true)"
+              if [ -n "$http_code" ]; then
+                fail_reason="http_${http_code}"
+              else
+                fail_reason="unknown_error"
+              fi
+              echo "$fail_reason" >> "$ISSUE_CREATE_FAIL_REASONS_FILE"
+              rm -f "$err_file" "$payload_file"
+              if is_retryable_http "${http_code:-}"; then
+                if [ "$attempt" -lt "$max_attempts" ]; then
+                  ISSUE_CREATE_RETRY_COUNT=$((ISSUE_CREATE_RETRY_COUNT + 1))
+                  sleep "$sleep_sec"
+                  sleep_sec=$((sleep_sec * 2))
+                  attempt=$((attempt + 1))
+                  continue
+                fi
+              fi
+              return 1
+            done
+            return 1
           }
 
           status_transition_fail=0
@@ -698,17 +756,27 @@ jobs:
           while IFS=$'\t' read -r candidate_key candidate_slug candidate_category candidate_priority candidate_recurrence candidate_draft; do
             [ -z "${candidate_slug:-}" ] && continue
             issue_title="[AUTO][${candidate_slug}] ${candidate_category} (${candidate_priority})"
-            existing_issue_id="$(gh issue list --state open --limit 100 --search "\"[AUTO][${candidate_slug}]\" in:title" --json number --jq '.[0].number' 2>/dev/null || true)"
+            existing_issue_id="$(gh issue list --state open --limit 100 --search "\"Draft-Key: ${candidate_key}\" in:body" --json number --jq '.[0].number' 2>/dev/null || true)"
+            if [ -z "${existing_issue_id:-}" ] || [ "${existing_issue_id}" = "null" ]; then
+              existing_issue_id="$(gh issue list --state open --limit 100 --search "\"[AUTO][${candidate_slug}]\" in:title" --json number --jq '.[0].number' 2>/dev/null || true)"
+            fi
             if [ -n "${existing_issue_id:-}" ] && [ "${existing_issue_id}" != "null" ]; then
               ISSUE_SKIPPED_EXISTING=$((ISSUE_SKIPPED_EXISTING + 1))
               continue
             fi
-            if gh issue create --title "$issue_title" --body-file "$candidate_draft" >/dev/null 2>&1; then
+            if issue_create_with_retry "$issue_title" "$candidate_draft" "$candidate_key"; then
               ISSUE_CREATED=$((ISSUE_CREATED + 1))
             else
               ISSUE_CREATE_FAILED=$((ISSUE_CREATE_FAILED + 1))
             fi
           done < "$AUTO_ISSUE_CANDIDATES"
+
+          ISSUE_CREATE_FAIL_BY_REASON_JSON="$OUT/drafts/issue-create-fail-by-reason.json"
+          if [ -s "$ISSUE_CREATE_FAIL_REASONS_FILE" ]; then
+            jq -Rn 'reduce inputs as $line ({}; .[$line] = (.[$line] // 0) + 1)' < "$ISSUE_CREATE_FAIL_REASONS_FILE" > "$ISSUE_CREATE_FAIL_BY_REASON_JSON"
+          else
+            echo '{}' > "$ISSUE_CREATE_FAIL_BY_REASON_JSON"
+          fi
 
           jq --argjson issue_drafts "$ISSUE_DRAFT_COUNT" \
              --argjson pr_drafts "$PR_DRAFT_COUNT" \
@@ -720,6 +788,8 @@ jobs:
              --argjson issue_created "$ISSUE_CREATED" \
              --argjson issue_skipped_existing "$ISSUE_SKIPPED_EXISTING" \
              --argjson issue_create_failed "$ISSUE_CREATE_FAILED" \
+             --argjson issue_create_retry_count "$ISSUE_CREATE_RETRY_COUNT" \
+             --argjson issue_create_latency_ms "$ISSUE_CREATE_LATENCY_MS" \
              --argjson block_human "$BLOCK_HUMAN_COUNT" '
             .drafts = {
               issue: $issue_drafts,
@@ -734,8 +804,15 @@ jobs:
               issue_created: $issue_created,
               issue_skipped_existing: $issue_skipped_existing,
               issue_create_failed: $issue_create_failed,
+              issue_create_retry_count: $issue_create_retry_count,
+              issue_create_latency_ms: $issue_create_latency_ms,
               block_human: $block_human
             }
+          ' "$OUT/metrics.json" > "$OUT/metrics.tmp.json"
+          mv "$OUT/metrics.tmp.json" "$OUT/metrics.json"
+
+          jq --slurpfile reasons "$ISSUE_CREATE_FAIL_BY_REASON_JSON" '
+            .promotions.issue_create_fail_by_reason = ($reasons[0] // {})
           ' "$OUT/metrics.json" > "$OUT/metrics.tmp.json"
           mv "$OUT/metrics.tmp.json" "$OUT/metrics.json"
 
@@ -744,6 +821,20 @@ jobs:
             echo "auto_issue_create_failed" >> "$FAIL_REASONS"
             echo "ERROR_AUTOMATION" >> "$FAIL_CATEGORIES"
             sort -u "$FAIL_CATEGORIES" -o "$FAIL_CATEGORIES"
+            BLOCK_DRAFT="$OUT/drafts/block/block-auto-issue-create-failed.md"
+            mkdir -p "$(dirname "$BLOCK_DRAFT")"
+            {
+              echo "# [AUTO-BLOCK] auto_issue_create_failed"
+              echo
+              echo "- reason: auto_issue_create_failed"
+              echo "- retries: $ISSUE_CREATE_RETRY_COUNT"
+              echo "- latency_ms: $ISSUE_CREATE_LATENCY_MS"
+              echo "- fail_by_reason: $(cat "$ISSUE_CREATE_FAIL_BY_REASON_JSON")"
+              echo "- run: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+              echo
+              echo "## Retry Command"
+              echo "\`gh workflow run ops-autopilot-observe.yml --ref ${GITHUB_REF_NAME:-main-v2}\`"
+            } > "$BLOCK_DRAFT"
           fi
 
           {
@@ -759,6 +850,9 @@ jobs:
             echo "- issue_created: $ISSUE_CREATED"
             echo "- issue_skipped_existing: $ISSUE_SKIPPED_EXISTING"
             echo "- issue_create_failed: $ISSUE_CREATE_FAILED"
+            echo "- issue_create_retry_count: $ISSUE_CREATE_RETRY_COUNT"
+            echo "- issue_create_latency_ms: $ISSUE_CREATE_LATENCY_MS"
+            echo "- issue_create_fail_by_reason: $(cat "$ISSUE_CREATE_FAIL_BY_REASON_JSON")"
             echo "- block_human: $BLOCK_HUMAN_COUNT"
             echo
             echo "## Issue Drafts"
@@ -884,6 +978,9 @@ jobs:
               "METRIC ISSUE_CREATED=\(.promotions.issue_created // 0)\n" +
               "METRIC ISSUE_SKIPPED_EXISTING=\(.promotions.issue_skipped_existing // 0)\n" +
               "METRIC ISSUE_CREATE_FAILED=\(.promotions.issue_create_failed // 0)\n" +
+              "METRIC ISSUE_CREATE_RETRY_COUNT=\(.promotions.issue_create_retry_count // 0)\n" +
+              "METRIC ISSUE_CREATE_LATENCY_MS=\(.promotions.issue_create_latency_ms // 0)\n" +
+              "METRIC ISSUE_CREATE_FAIL_BY_REASON=\(.promotions.issue_create_fail_by_reason // {} | tojson)\n" +
               "METRIC BLOCK_HUMAN=\(.promotions.block_human // 0)"
             ' "$OUT/metrics.json"
             echo
