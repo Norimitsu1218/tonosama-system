@@ -201,13 +201,65 @@ jobs:
             echo "project_has_secret_accessor_bindings" >> "$WARN_REASONS"
           fi
           if [ -s "$OUT/missing-required-secret-accessor.txt" ]; then
-            warn=1
-            echo "runtime_sa_missing_required_secret_accessor" >> "$WARN_REASONS"
+            fail=1
+            echo "required_secret_accessor_missing" >> "$FAIL_REASONS"
           fi
           if [ -s "$OUT/extra-runtime-secret-accessor.txt" ]; then
             warn=1
             echo "runtime_sa_has_extra_secret_accessor" >> "$WARN_REASONS"
           fi
+
+          WARN_CATEGORIES="$OUT/warn-categories.txt"
+          FAIL_CATEGORIES="$OUT/fail-categories.txt"
+          : > "$WARN_CATEGORIES"
+          : > "$FAIL_CATEGORIES"
+
+          while IFS= read -r reason; do
+            [ -z "$reason" ] && continue
+            case "$reason" in
+              ttl_*)
+                echo "WARN_TTL" >> "$WARN_CATEGORIES"
+                ;;
+              project_has_editor_or_owner_bindings)
+                echo "WARN_EDITOR_OWNER" >> "$WARN_CATEGORIES"
+                ;;
+              runtime_sa_has_extra_secret_accessor|project_has_secret_accessor_bindings)
+                echo "WARN_OPTIONAL_SECRET_EXTRA" >> "$WARN_CATEGORIES"
+                ;;
+              runtime_sa_drift)
+                echo "WARN_RUNTIME_DRIFT" >> "$WARN_CATEGORIES"
+                ;;
+              *)
+                echo "WARN_UNKNOWN" >> "$WARN_CATEGORIES"
+                ;;
+            esac
+          done < "$WARN_REASONS"
+
+          while IFS= read -r reason; do
+            [ -z "$reason" ] && continue
+            case "$reason" in
+              required_secret_accessor_missing)
+                echo "ERROR_SECRET_REQUIRED_MISSING" >> "$FAIL_CATEGORIES"
+                ;;
+              run_service_describe_failed|functions_list_failed|project_iam_read_failed|verify_workflow_runs_read_failed|service_url_missing|smoke_http_*|runtime_sa_mismatch|runtime_sa_default_compute_detected|verify_workflow_success_count_zero)
+                echo "ERROR_RUNTIME_OR_OBSERVE" >> "$FAIL_CATEGORIES"
+                ;;
+              *)
+                echo "ERROR_UNKNOWN" >> "$FAIL_CATEGORIES"
+                ;;
+            esac
+          done < "$FAIL_REASONS"
+
+          sort -u "$WARN_CATEGORIES" -o "$WARN_CATEGORIES"
+          sort -u "$FAIL_CATEGORIES" -o "$FAIL_CATEGORIES"
+
+          WARN_TTL_COUNT="$(grep -c '^WARN_TTL$' "$WARN_CATEGORIES" || true)"
+          WARN_EDITOR_OWNER_COUNT="$(grep -c '^WARN_EDITOR_OWNER$' "$WARN_CATEGORIES" || true)"
+          WARN_OPTIONAL_SECRET_EXTRA_COUNT="$(grep -c '^WARN_OPTIONAL_SECRET_EXTRA$' "$WARN_CATEGORIES" || true)"
+          WARN_RUNTIME_DRIFT_COUNT="$(grep -c '^WARN_RUNTIME_DRIFT$' "$WARN_CATEGORIES" || true)"
+          WARN_UNKNOWN_COUNT="$(grep -c '^WARN_UNKNOWN$' "$WARN_CATEGORIES" || true)"
+          WARN_TOTAL="$((WARN_TTL_COUNT + WARN_EDITOR_OWNER_COUNT + WARN_OPTIONAL_SECRET_EXTRA_COUNT + WARN_RUNTIME_DRIFT_COUNT + WARN_UNKNOWN_COUNT))"
+          ERROR_TOTAL="$(wc -l < "$FAIL_REASONS" | tr -d ' ')"
 
           status="OK"
           if [ "$fail" -eq 1 ]; then
@@ -254,6 +306,24 @@ jobs:
             else
               echo "- (none)"
             fi
+            echo
+            echo "## Counters"
+            echo "- WARN total: $WARN_TOTAL"
+            echo "- ERROR total: $ERROR_TOTAL"
+            echo "- WARN_TTL: $WARN_TTL_COUNT"
+            echo "- WARN_EDITOR_OWNER: $WARN_EDITOR_OWNER_COUNT"
+            echo "- WARN_OPTIONAL_SECRET_EXTRA: $WARN_OPTIONAL_SECRET_EXTRA_COUNT"
+            echo "- WARN_RUNTIME_DRIFT: $WARN_RUNTIME_DRIFT_COUNT"
+            echo "- WARN_UNKNOWN: $WARN_UNKNOWN_COUNT"
+            echo
+            echo "## Machine Metrics"
+            echo "METRIC WARN_TOTAL=$WARN_TOTAL"
+            echo "METRIC ERROR_TOTAL=$ERROR_TOTAL"
+            echo "METRIC WARN_TTL=$WARN_TTL_COUNT"
+            echo "METRIC WARN_EDITOR_OWNER=$WARN_EDITOR_OWNER_COUNT"
+            echo "METRIC WARN_OPTIONAL_SECRET_EXTRA=$WARN_OPTIONAL_SECRET_EXTRA_COUNT"
+            echo "METRIC WARN_RUNTIME_DRIFT=$WARN_RUNTIME_DRIFT_COUNT"
+            echo "METRIC WARN_UNKNOWN=$WARN_UNKNOWN_COUNT"
             echo
             echo "## Next CLI"
             echo "1. gcloud run services describe $SERVICE --project $PROJECT_ID --region $REGION --format='value(spec.template.spec.serviceAccountName)'"
