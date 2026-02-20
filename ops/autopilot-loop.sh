@@ -16,6 +16,63 @@ summary_path="none"
 policy_rules_path="none"
 policy_version="unknown"
 
+annotate_metrics_decision() {
+  local decision_code="${1:?decision required}"
+  local reason_code="${2:?reason required}"
+  local tmp_file eval_at
+
+  if [[ -z "${metrics_path:-}" || "$metrics_path" == "none" || ! -f "$metrics_path" ]]; then
+    return 1
+  fi
+
+  tmp_file="${metrics_path}.tmp"
+  eval_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+  if ! jq \
+    --arg decision "$decision_code" \
+    --arg reason "$reason_code" \
+    --arg source "autopilot-loop" \
+    --arg eval_at "$eval_at" \
+    --arg policy_ver "$policy_version" \
+    '
+      .decision = $decision
+      | .decision_reason_code = $reason
+      | .decision_source = $source
+      | .policy_eval_at = $eval_at
+      | .policy_version = (.policy_version // $policy_ver)
+    ' "$metrics_path" > "$tmp_file"; then
+    rm -f "$tmp_file"
+    return 1
+  fi
+
+  if ! jq -e 'type == "object"' "$tmp_file" >/dev/null 2>&1; then
+    rm -f "$tmp_file"
+    return 1
+  fi
+
+  if ! mv "$tmp_file" "$metrics_path"; then
+    rm -f "$tmp_file"
+    return 1
+  fi
+
+  return 0
+}
+
+block_with_metrics() {
+  local reason_code="${1:?reason required}"
+  local next_task="${2:-KEEP-MANUAL}"
+
+  if [[ "${metrics_path:-none}" != "none" && -f "${metrics_path:-}" ]]; then
+    if ! annotate_metrics_decision "BLOCK" "$reason_code"; then
+      emit_result "BLOCK" "metrics_write_failed" "$next_task"
+      exit 2
+    fi
+  fi
+
+  emit_result "BLOCK" "$reason_code" "$next_task"
+  exit 2
+}
+
 retry_gh() {
   local max="${1:-3}"
   shift
@@ -159,8 +216,7 @@ fi
 policy_rules_path="$(find "$out_dir" -type f -name 'policy-rules.json' | head -n1 || true)"
 if [[ -z "$policy_rules_path" ]]; then
   policy_rules_path="none"
-  emit_result "BLOCK" "policy_rules_missing" "BLOCK-TRIAGE"
-  exit 2
+  block_with_metrics "policy_rules_missing" "BLOCK-TRIAGE"
 fi
 
 if ! jq -e '
@@ -171,8 +227,7 @@ if ! jq -e '
   and (.promotions.dedupe_key | type == "string")
   and (.retries.issue_create_max_attempts | type == "number")
 ' "$policy_rules_path" >/dev/null 2>&1; then
-  emit_result "BLOCK" "policy_rules_invalid" "BLOCK-TRIAGE"
-  exit 2
+  block_with_metrics "policy_rules_invalid" "BLOCK-TRIAGE"
 fi
 
 if ! jq -e '
@@ -183,15 +238,13 @@ if ! jq -e '
   and (.counts.warn | type == "number")
   and (.counts.fail | type == "number")
 ' "$metrics_path" >/dev/null 2>&1; then
-  emit_result "BLOCK" "metrics_invalid" "BLOCK-TRIAGE"
-  exit 2
+  block_with_metrics "metrics_invalid" "BLOCK-TRIAGE"
 fi
 
 policy_version="$(jq -r '.policy_version' "$policy_rules_path" 2>/dev/null || echo unknown)"
 metrics_policy_version="$(jq -r '.policy_version // "missing"' "$metrics_path" 2>/dev/null || echo missing)"
 if [[ "$metrics_policy_version" != "$policy_version" ]]; then
-  emit_result "BLOCK" "policy_version_mismatch" "BLOCK-TRIAGE"
-  exit 2
+  block_with_metrics "policy_version_mismatch" "BLOCK-TRIAGE"
 fi
 
 next_task="$(jq -r '.next_task_id // "KEEP-MANUAL"' "$metrics_path" 2>/dev/null || echo KEEP-MANUAL)"
@@ -201,8 +254,7 @@ if ! jq -e --slurpfile p "$policy_rules_path" '
   | ($p[0].classification.warn_allowlist + ["WARN_UNKNOWN"]) as $allowWarn
   | (($activeWarn - $allowWarn) | length) == 0
 ' "$metrics_path" >/dev/null 2>&1; then
-  emit_result "BLOCK" "unknown_warn_category" "$next_task"
-  exit 2
+  block_with_metrics "unknown_warn_category" "$next_task"
 fi
 
 if ! jq -e --slurpfile p "$policy_rules_path" '
@@ -210,8 +262,7 @@ if ! jq -e --slurpfile p "$policy_rules_path" '
   | ($p[0].classification.fail_closed_categories) as $allowFail
   | (($activeFail - $allowFail) | length) == 0
 ' "$metrics_path" >/dev/null 2>&1; then
-  emit_result "BLOCK" "unknown_fail_category" "$next_task"
-  exit 2
+  block_with_metrics "unknown_fail_category" "$next_task"
 fi
 
 fail_total="$(jq -r '.counts.fail // 0' "$metrics_path" 2>/dev/null || echo 0)"
@@ -237,7 +288,11 @@ else
 fi
 
 if [[ "$decision" == "BLOCK" ]]; then
-  emit_result "$decision" "$reason" "$next_task"
+  block_with_metrics "$reason" "$next_task"
+fi
+
+if ! annotate_metrics_decision "$decision" "$reason"; then
+  emit_result "BLOCK" "metrics_write_failed" "$next_task"
   exit 2
 fi
 

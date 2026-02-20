@@ -291,6 +291,12 @@
   - `ops/autopilot-loop.sh` must read `policy-rules.json` + `metrics.json`
   - `policy_version` mismatch or rule/schema errors => `BLOCK`
   - decision reasons are fixed codes (`policy_pass`, `warn_category_present`, `fail_category_present`, ...)
+- S-25-12 decision fields (written atomically to `metrics.json`):
+  - `decision`
+  - `decision_reason_code`
+  - `decision_source` (`autopilot-loop`)
+  - `policy_eval_at` (UTC ISO8601)
+  - write path uses `tmp -> mv` and any write failure => `BLOCK (metrics_write_failed)`
 
 ## S-21 Runtime Track
 
