@@ -23,6 +23,7 @@ jobs:
       REGION: asia-northeast1
       SERVICE: ssrapicius6bcae
       VERIFY_WORKFLOW_FILE: verify-approval-hash.yml
+      POLICY_VERSION: s25-10.0
       EXPECTED_RUNTIME_SA: sa-ssr-runtime@apicius-6bcae.iam.gserviceaccount.com
       RUNTIME_SA_EMAIL: sa-ssr-runtime@apicius-6bcae.iam.gserviceaccount.com
       GH_TOKEN: ${{ github.token }}
@@ -276,6 +277,7 @@ jobs:
           jq -n \
             --arg status "$status" \
             --arg run_id "${GITHUB_RUN_ID}" \
+            --arg policy_version "$POLICY_VERSION" \
             --argjson warn_total "$WARN_TOTAL" \
             --argjson error_total "$ERROR_TOTAL" \
             --argjson warn_ttl "$WARN_TTL_COUNT" \
@@ -290,6 +292,7 @@ jobs:
             '
             {
               schema_version: "1.0.0",
+              policy_version: $policy_version,
               status: $status,
               run_id: $run_id,
               next_task_id: "KEEP-MANUAL",
@@ -382,6 +385,27 @@ jobs:
           WARN_UNKNOWN
           EOF
           sort -u "$OUT/due-enforced-categories.txt" -o "$OUT/due-enforced-categories.txt"
+
+          jq -n \
+            --arg policy_version "$POLICY_VERSION" \
+            '{
+              policy_version: $policy_version,
+              classification: {
+                warn_allowlist: ["WARN_TTL","WARN_EDITOR_OWNER","WARN_OPTIONAL_SECRET_EXTRA","WARN_REQUIRED_SECRET_MISSING","WARN_RUNTIME_DRIFT"],
+                due_enforced_categories: ["WARN_RUNTIME_DRIFT","WARN_UNKNOWN"],
+                fail_closed_categories: ["ERROR_RUNTIME_OR_OBSERVE","ERROR_SECRET_REQUIRED_MISSING","ERROR_POLICY_GUARDRAIL","ERROR_AUTOMATION","ERROR_UNKNOWN"]
+              },
+              promotions: {
+                dedupe_key: "category|owner|action_class|target",
+                classes: ["draft_only","auto_issue","block_human"],
+                auto_issue: "effective_priority>=P1 && recurrence_count>=2 OR due_over=true",
+                block_human: "action_class=block"
+              },
+              retries: {
+                issue_create_max_attempts: 3,
+                retry_http_codes: ["429","5xx"]
+              }
+            }' > "$OUT/policy-rules.json"
 
           PREV3_RUN_IDS="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ops-autopilot-observe.yml/runs?per_page=30" \
             | jq -r --arg cur "${GITHUB_RUN_ID}" '.workflow_runs[] | select((.id|tostring) != $cur and .status == "completed") | .id' \
@@ -1018,6 +1042,30 @@ jobs:
             echo "2. gcloud functions list --project $PROJECT_ID --v2 --regions $REGION --format='table(name,buildConfig.runtime,serviceConfig.serviceAccountEmail)'"
             echo "3. gh run list --workflow $VERIFY_WORKFLOW_FILE --limit 5"
           } > "$OUT/summary.md"
+
+          cp "$OUT/summary.md" "$OUT/summary-detail.md"
+          if [ "$status" != "FAIL" ]; then
+            {
+              echo "# Ops Autopilot Observe"
+              echo
+              echo "- Status: $status"
+              echo "- policy_version: $POLICY_VERSION"
+              echo "- WARN total: $(jq -r '.counts.warn // 0' "$OUT/metrics.json")"
+              echo "- ERROR total: $(jq -r '.counts.fail // 0' "$OUT/metrics.json")"
+              echo "- issue_drafts_new: $(jq -r '.drafts.issue_drafts_new // 0' "$OUT/metrics.json")"
+              echo "- issue_drafts_skipped_dedupe: $(jq -r '.drafts.issue_drafts_skipped_dedupe // 0' "$OUT/metrics.json")"
+              echo "- issue_created: $(jq -r '.promotions.issue_created // 0' "$OUT/metrics.json")"
+              echo "- issue_create_failed: $(jq -r '.promotions.issue_create_failed // 0' "$OUT/metrics.json")"
+              echo "- block_human: $(jq -r '.promotions.block_human // 0' "$OUT/metrics.json")"
+              echo
+              echo "## Next CLI"
+              echo "1. gcloud run services describe $SERVICE --project $PROJECT_ID --region $REGION --format='value(spec.template.spec.serviceAccountName)'"
+              echo "2. gcloud functions list --project $PROJECT_ID --v2 --regions $REGION --format='table(name,buildConfig.runtime,serviceConfig.serviceAccountEmail)'"
+              echo "3. gh run list --workflow $VERIFY_WORKFLOW_FILE --limit 5"
+              echo
+              echo "- detail: summary-detail.md"
+            } > "$OUT/summary.md"
+          fi
 
           if [ "$status" = "FAIL" ]; then
             echo "status=FAIL" >> "$GITHUB_OUTPUT"

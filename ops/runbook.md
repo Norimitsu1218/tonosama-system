@@ -283,6 +283,10 @@
   - max 3 attempts with exponential backoff
   - retry only on `429` and `5xx`
   - `4xx` fails immediately and is counted as `ERROR_AUTOMATION`
+- S-25-10 policy artifacts:
+  - `policy-rules.json` (machine-readable decision rules)
+  - `summary-detail.md` (full detail, generated every run)
+  - `summary.md` (compact for non-BLOCK/non-FAIL runs)
 
 ## S-21 Runtime Track
 
