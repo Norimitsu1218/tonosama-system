@@ -266,6 +266,12 @@
 `artifacts/ops-observe/block/block-<workflow|branch|reason>.md`
 - Duplicate block drafts are suppressed within:
 `BLOCK_DEDUPE_WINDOW_SEC` (default `900`)
+- Issue/PR draft dedupe key is fixed:
+`category|owner|action_class|target`
+- Draft regeneration exception rules:
+  - `effective_priority` upgraded
+  - `due_over` changed to `true`
+  - status transition `WARN -> FAIL`
 
 ## S-21 Runtime Track
 

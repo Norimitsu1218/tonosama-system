@@ -315,15 +315,15 @@ jobs:
           jq '
             .actions = (
               [
-                {category:"WARN_TTL", count:(.warn_by_category.WARN_TTL // 0), action_class:"monitor", priority:"P2", owner:"ops", due_hint:"before_next_rotation"},
-                {category:"WARN_EDITOR_OWNER", count:(.warn_by_category.WARN_EDITOR_OWNER // 0), action_class:"ignore", priority:"P3", owner:"none", due_hint:null},
-                {category:"WARN_OPTIONAL_SECRET_EXTRA", count:(.warn_by_category.WARN_OPTIONAL_SECRET_EXTRA // 0), action_class:"monitor", priority:"P2", owner:"ops", due_hint:"next_iam_cycle"},
-                {category:"WARN_REQUIRED_SECRET_MISSING", count:(.warn_by_category.WARN_REQUIRED_SECRET_MISSING // 0), action_class:"owner_action", priority:"P1", owner:"platform", due_hint:"same_day"},
-                {category:"WARN_RUNTIME_DRIFT", count:(.warn_by_category.WARN_RUNTIME_DRIFT // 0), action_class:"owner_action", priority:"P1", owner:"platform", due_hint:"immediate"},
-                {category:"WARN_UNKNOWN", count:(.warn_by_category.WARN_UNKNOWN // 0), action_class:"owner_action", priority:"P1", owner:"platform", due_hint:"same_day"},
-                {category:"ERROR_RUNTIME_OR_OBSERVE", count:(.fail_by_category.ERROR_RUNTIME_OR_OBSERVE // 0), action_class:"block", priority:"P0", owner:"platform", due_hint:"immediate"},
-                {category:"ERROR_SECRET_REQUIRED_MISSING", count:(.fail_by_category.ERROR_SECRET_REQUIRED_MISSING // 0), action_class:"block", priority:"P0", owner:"platform", due_hint:"immediate"},
-                {category:"ERROR_UNKNOWN", count:(.fail_by_category.ERROR_UNKNOWN // 0), action_class:"block", priority:"P0", owner:"platform", due_hint:"immediate"}
+                {category:"WARN_TTL", count:(.warn_by_category.WARN_TTL // 0), action_class:"monitor", priority:"P2", owner:"ops", target:"firestore_ttl", due_hint:"before_next_rotation"},
+                {category:"WARN_EDITOR_OWNER", count:(.warn_by_category.WARN_EDITOR_OWNER // 0), action_class:"ignore", priority:"P3", owner:"none", target:"project_iam", due_hint:null},
+                {category:"WARN_OPTIONAL_SECRET_EXTRA", count:(.warn_by_category.WARN_OPTIONAL_SECRET_EXTRA // 0), action_class:"monitor", priority:"P2", owner:"ops", target:"secret_iam", due_hint:"next_iam_cycle"},
+                {category:"WARN_REQUIRED_SECRET_MISSING", count:(.warn_by_category.WARN_REQUIRED_SECRET_MISSING // 0), action_class:"owner_action", priority:"P1", owner:"platform", target:"secret_iam", due_hint:"same_day"},
+                {category:"WARN_RUNTIME_DRIFT", count:(.warn_by_category.WARN_RUNTIME_DRIFT // 0), action_class:"owner_action", priority:"P1", owner:"platform", target:"runtime", due_hint:"immediate"},
+                {category:"WARN_UNKNOWN", count:(.warn_by_category.WARN_UNKNOWN // 0), action_class:"owner_action", priority:"P1", owner:"platform", target:"unknown", due_hint:"same_day"},
+                {category:"ERROR_RUNTIME_OR_OBSERVE", count:(.fail_by_category.ERROR_RUNTIME_OR_OBSERVE // 0), action_class:"block", priority:"P0", owner:"platform", target:"runtime", due_hint:"immediate"},
+                {category:"ERROR_SECRET_REQUIRED_MISSING", count:(.fail_by_category.ERROR_SECRET_REQUIRED_MISSING // 0), action_class:"block", priority:"P0", owner:"platform", target:"secret_iam", due_hint:"immediate"},
+                {category:"ERROR_UNKNOWN", count:(.fail_by_category.ERROR_UNKNOWN // 0), action_class:"block", priority:"P0", owner:"platform", target:"unknown", due_hint:"immediate"}
               ] | map(select(.count > 0))
             )
           ' "$OUT/metrics.json" > "$OUT/metrics.tmp.json"
@@ -430,11 +430,21 @@ jobs:
               elif $p == "P2" then "P1"
               elif $p == "P1" then "P0"
               else $p end;
+            def due_threshold($h):
+              if $h == "immediate" or $h == "same_day" then 2
+              elif $h == "before_next_rotation" then 3
+              elif $h == "next_iam_cycle" then 4
+              else 99 end;
             .actions = (.actions // [] | map(
               . + { recurrence_count: ($rec[0][.category] // 0) }
               | . + {
                   effective_priority:
                     (if (.recurrence_count // 0) >= 3 and (.priority | startswith("P")) then escalate(.priority) else .priority end)
+                }
+              | . + {
+                  due_threshold: due_threshold(.due_hint // ""),
+                  due_over:
+                    (if due_threshold(.due_hint // "") < 99 and (.recurrence_count // 0) >= due_threshold(.due_hint // "") then true else false end)
                 }
             ))
           ' "$OUT/metrics.json" > "$OUT/metrics.tmp.json"
@@ -483,13 +493,28 @@ jobs:
           : > "$CURRENT_DRAFT_INDEX"
           PREV_DRAFT_INDEX="$(find "$OUT/previous" -path '*/drafts/draft-index.tsv' -type f | head -n1 || true)"
           ISSUE_DRAFT_NEW=0
-          ISSUE_DRAFT_SKIPPED=0
+          ISSUE_DRAFT_SKIPPED_DEDUPE=0
           PR_DRAFT_NEW=0
-          PR_DRAFT_SKIPPED=0
+          PR_DRAFT_SKIPPED_DEDUPE=0
 
           decode_field() {
             printf '%s' "$1" | base64 --decode | jq -r "$2"
           }
+
+          priority_rank() {
+            case "$1" in
+              P0) echo 0 ;;
+              P1) echo 1 ;;
+              P2) echo 2 ;;
+              P3) echo 3 ;;
+              *) echo 9 ;;
+            esac
+          }
+
+          status_transition_fail=0
+          if jq -e '.status_delta == "WARN -> FAIL"' "$OUT/metrics-diff.json" >/dev/null 2>&1; then
+            status_transition_fail=1
+          fi
 
           jq -r '.actions[]? | @base64' "$OUT/metrics.json" | while IFS= read -r row; do
             [ -z "$row" ] && continue
@@ -498,10 +523,12 @@ jobs:
             priority="$(decode_field "$row" '.priority // "P3"')"
             effective_priority="$(decode_field "$row" '.effective_priority // .priority // "P3"')"
             owner="$(decode_field "$row" '.owner // "none"')"
+            target="$(decode_field "$row" '.target // .category // "global"')"
             due_hint="$(decode_field "$row" '.due_hint // "none"')"
+            due_over="$(decode_field "$row" '.due_over // false')"
             count="$(decode_field "$row" '.count // 0')"
             recurrence="$(decode_field "$row" '.recurrence_count // 0')"
-            dedupe_key="${category}|${owner}|${action_class}"
+            dedupe_key="${category}|${owner}|${action_class}|${target}"
 
             draft_slug="$(printf '%s' "${category}" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_' '_')"
             issue_needed=0
@@ -513,15 +540,39 @@ jobs:
 
             if [ "$issue_needed" -eq 1 ]; then
               prev_rec=0
+              prev_priority="P3"
+              prev_due_over="false"
+              prev_status="UNKNOWN"
               if [ -n "${PREV_DRAFT_INDEX:-}" ] && [ -f "$PREV_DRAFT_INDEX" ]; then
                 prev_rec="$(awk -F'\t' -v kind="issue" -v k="$dedupe_key" '$1==kind && $2==k{print $3; exit}' "$PREV_DRAFT_INDEX" 2>/dev/null || echo 0)"
+                prev_priority="$(awk -F'\t' -v kind="issue" -v k="$dedupe_key" '$1==kind && $2==k{print $4; exit}' "$PREV_DRAFT_INDEX" 2>/dev/null || echo P3)"
+                prev_due_over="$(awk -F'\t' -v kind="issue" -v k="$dedupe_key" '$1==kind && $2==k{print $5; exit}' "$PREV_DRAFT_INDEX" 2>/dev/null || echo false)"
+                prev_status="$(awk -F'\t' -v kind="issue" -v k="$dedupe_key" '$1==kind && $2==k{print $6; exit}' "$PREV_DRAFT_INDEX" 2>/dev/null || echo UNKNOWN)"
               fi
               if ! [[ "$prev_rec" =~ ^[0-9]+$ ]]; then
                 prev_rec=0
               fi
-              if [ "$recurrence" -gt "$prev_rec" ]; then
+              curr_rank="$(priority_rank "$effective_priority")"
+              prev_rank="$(priority_rank "$prev_priority")"
+              priority_up=0
+              if [ "$curr_rank" -lt "$prev_rank" ]; then
+                priority_up=1
+              fi
+              due_escalated=0
+              if [ "$due_over" = "true" ] && [ "$prev_due_over" != "true" ]; then
+                due_escalated=1
+              fi
+              status_warn_to_fail=0
+              if [ "$status_transition_fail" -eq 1 ] && { [ "$prev_status" = "WARN" ] || [ "$prev_status" = "UNKNOWN" ]; }; then
+                status_warn_to_fail=1
+              fi
+              if [ "$recurrence" -gt "$prev_rec" ] || [ "$priority_up" -eq 1 ] || [ "$due_escalated" -eq 1 ] || [ "$status_warn_to_fail" -eq 1 ]; then
                 {
                   echo "# [AUTO-DRAFT] $category"
+                  echo
+                  echo "- Draft-Key: $dedupe_key"
+                  echo "- Recurrence-Count: $recurrence"
+                  echo "- Effective-Priority: $effective_priority"
                   echo
                   echo "## Why"
                   echo "- action_class: $action_class"
@@ -529,6 +580,8 @@ jobs:
                   echo "- effective_priority: $effective_priority"
                   echo "- count: $count"
                   echo "- recurrence_count: $recurrence"
+                  echo "- target: $target"
+                  echo "- due_over: $due_over"
                   echo "- owner: $owner"
                   echo "- due_hint: $due_hint"
                   echo "- run: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
@@ -543,9 +596,9 @@ jobs:
                 } > "$DRAFT_ISSUES_DIR/issue_${draft_slug}.md"
                 ISSUE_DRAFT_NEW=$((ISSUE_DRAFT_NEW + 1))
               else
-                ISSUE_DRAFT_SKIPPED=$((ISSUE_DRAFT_SKIPPED + 1))
+                ISSUE_DRAFT_SKIPPED_DEDUPE=$((ISSUE_DRAFT_SKIPPED_DEDUPE + 1))
               fi
-              echo -e "issue\t${dedupe_key}\t${recurrence}" >> "$CURRENT_DRAFT_INDEX"
+              echo -e "issue\t${dedupe_key}\t${recurrence}\t${effective_priority}\t${due_over}\t${status}" >> "$CURRENT_DRAFT_INDEX"
             fi
 
             pr_needed=0
@@ -558,15 +611,39 @@ jobs:
             fi
             if [ "$pr_needed" -eq 1 ]; then
               prev_rec=0
+              prev_priority="P3"
+              prev_due_over="false"
+              prev_status="UNKNOWN"
               if [ -n "${PREV_DRAFT_INDEX:-}" ] && [ -f "$PREV_DRAFT_INDEX" ]; then
                 prev_rec="$(awk -F'\t' -v kind="pr" -v k="$dedupe_key" '$1==kind && $2==k{print $3; exit}' "$PREV_DRAFT_INDEX" 2>/dev/null || echo 0)"
+                prev_priority="$(awk -F'\t' -v kind="pr" -v k="$dedupe_key" '$1==kind && $2==k{print $4; exit}' "$PREV_DRAFT_INDEX" 2>/dev/null || echo P3)"
+                prev_due_over="$(awk -F'\t' -v kind="pr" -v k="$dedupe_key" '$1==kind && $2==k{print $5; exit}' "$PREV_DRAFT_INDEX" 2>/dev/null || echo false)"
+                prev_status="$(awk -F'\t' -v kind="pr" -v k="$dedupe_key" '$1==kind && $2==k{print $6; exit}' "$PREV_DRAFT_INDEX" 2>/dev/null || echo UNKNOWN)"
               fi
               if ! [[ "$prev_rec" =~ ^[0-9]+$ ]]; then
                 prev_rec=0
               fi
-              if [ "$recurrence" -gt "$prev_rec" ]; then
+              curr_rank="$(priority_rank "$effective_priority")"
+              prev_rank="$(priority_rank "$prev_priority")"
+              priority_up=0
+              if [ "$curr_rank" -lt "$prev_rank" ]; then
+                priority_up=1
+              fi
+              due_escalated=0
+              if [ "$due_over" = "true" ] && [ "$prev_due_over" != "true" ]; then
+                due_escalated=1
+              fi
+              status_warn_to_fail=0
+              if [ "$status_transition_fail" -eq 1 ] && { [ "$prev_status" = "WARN" ] || [ "$prev_status" = "UNKNOWN" ]; }; then
+                status_warn_to_fail=1
+              fi
+              if [ "$recurrence" -gt "$prev_rec" ] || [ "$priority_up" -eq 1 ] || [ "$due_escalated" -eq 1 ] || [ "$status_warn_to_fail" -eq 1 ]; then
                 {
                   echo "# [AUTO-DRAFT PR] $category"
+                  echo
+                  echo "- Draft-Key: $dedupe_key"
+                  echo "- Recurrence-Count: $recurrence"
+                  echo "- Effective-Priority: $effective_priority"
                   echo
                   echo "## Intent"
                   echo "- Prepare minimal diff proposal for \`$category\`"
@@ -584,20 +661,28 @@ jobs:
                 } > "$DRAFT_PRS_DIR/pr_${draft_slug}.md"
                 PR_DRAFT_NEW=$((PR_DRAFT_NEW + 1))
               else
-                PR_DRAFT_SKIPPED=$((PR_DRAFT_SKIPPED + 1))
+                PR_DRAFT_SKIPPED_DEDUPE=$((PR_DRAFT_SKIPPED_DEDUPE + 1))
               fi
-              echo -e "pr\t${dedupe_key}\t${recurrence}" >> "$CURRENT_DRAFT_INDEX"
+              echo -e "pr\t${dedupe_key}\t${recurrence}\t${effective_priority}\t${due_over}\t${status}" >> "$CURRENT_DRAFT_INDEX"
             fi
-          done
+          done < <(jq -r '.actions[]? | @base64' "$OUT/metrics.json")
 
           ISSUE_DRAFT_COUNT="$(find "$DRAFT_ISSUES_DIR" -type f -name '*.md' | wc -l | tr -d ' ')"
           PR_DRAFT_COUNT="$(find "$DRAFT_PRS_DIR" -type f -name '*.md' | wc -l | tr -d ' ')"
 
           jq --argjson issue_drafts "$ISSUE_DRAFT_COUNT" \
-             --argjson pr_drafts "$PR_DRAFT_COUNT" '
+             --argjson pr_drafts "$PR_DRAFT_COUNT" \
+             --argjson issue_drafts_new "$ISSUE_DRAFT_NEW" \
+             --argjson issue_drafts_skipped_dedupe "$ISSUE_DRAFT_SKIPPED_DEDUPE" \
+             --argjson pr_drafts_new "$PR_DRAFT_NEW" \
+             --argjson pr_drafts_skipped_dedupe "$PR_DRAFT_SKIPPED_DEDUPE" '
             .drafts = {
               issue: $issue_drafts,
-              pr: $pr_drafts
+              pr: $pr_drafts,
+              issue_drafts_new: $issue_drafts_new,
+              issue_drafts_skipped_dedupe: $issue_drafts_skipped_dedupe,
+              pr_drafts_new: $pr_drafts_new,
+              pr_drafts_skipped_dedupe: $pr_drafts_skipped_dedupe
             }
           ' "$OUT/metrics.json" > "$OUT/metrics.tmp.json"
           mv "$OUT/metrics.tmp.json" "$OUT/metrics.json"
@@ -608,9 +693,9 @@ jobs:
             echo "- issue_drafts: $ISSUE_DRAFT_COUNT"
             echo "- pr_drafts: $PR_DRAFT_COUNT"
             echo "- issue_drafts_new: $ISSUE_DRAFT_NEW"
-            echo "- issue_drafts_skipped: $ISSUE_DRAFT_SKIPPED"
+            echo "- issue_drafts_skipped_dedupe: $ISSUE_DRAFT_SKIPPED_DEDUPE"
             echo "- pr_drafts_new: $PR_DRAFT_NEW"
-            echo "- pr_drafts_skipped: $PR_DRAFT_SKIPPED"
+            echo "- pr_drafts_skipped_dedupe: $PR_DRAFT_SKIPPED_DEDUPE"
             echo
             echo "## Issue Drafts"
             find "$DRAFT_ISSUES_DIR" -maxdepth 1 -type f -name '*.md' -print | sed 's#^#- #' || true
@@ -690,7 +775,11 @@ jobs:
               "METRIC ERROR_POLICY_GUARDRAIL=\(.fail_by_category.ERROR_POLICY_GUARDRAIL // 0)\n" +
               "METRIC ERROR_UNKNOWN=\(.fail_by_category.ERROR_UNKNOWN // 0)\n" +
               "METRIC ISSUE_DRAFTS=\(.drafts.issue // 0)\n" +
-              "METRIC PR_DRAFTS=\(.drafts.pr // 0)"
+              "METRIC PR_DRAFTS=\(.drafts.pr // 0)\n" +
+              "METRIC ISSUE_DRAFTS_NEW=\(.drafts.issue_drafts_new // 0)\n" +
+              "METRIC ISSUE_DRAFTS_SKIPPED_DEDUPE=\(.drafts.issue_drafts_skipped_dedupe // 0)\n" +
+              "METRIC PR_DRAFTS_NEW=\(.drafts.pr_drafts_new // 0)\n" +
+              "METRIC PR_DRAFTS_SKIPPED_DEDUPE=\(.drafts.pr_drafts_skipped_dedupe // 0)"
             ' "$OUT/metrics.json"
             echo
             echo "## Actions"
