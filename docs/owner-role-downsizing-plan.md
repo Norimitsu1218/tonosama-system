@@ -10,6 +10,26 @@
 - No immediate blanket removal of human owner bindings.
 - Move to least privilege through staged migration.
 
+## Execution Preconditions (S-24-01)
+
+- Start condition:
+  - latest `ops-autopilot-observe` is `success` with artifact.
+  - latest `verify-approval-hash` is `success`.
+  - smoke check is HTTP 200.
+- Required executors:
+  - `operator`: executes IAM change command.
+  - `approver`: validates scope and approves execution.
+  - `rollback-owner`: executes rollback if regression is detected.
+- Emergency handling:
+  - if smoke or verify-hash fails, stop immediately and run rollback.
+  - no additional IAM removals allowed until service is green again.
+- Rollback responsibility:
+  - `rollback-owner` must run rollback command within 10 minutes of detected regression.
+  - rollback proof (command output + timestamp) must be saved in ops evidence.
+- Change unit:
+  - one member-role binding per change.
+  - each change requires before/after IAM snapshots.
+
 ## Phases
 
 1. Phase A (Inventory)

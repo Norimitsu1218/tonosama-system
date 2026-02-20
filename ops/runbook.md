@@ -241,6 +241,11 @@
   - rollback command,
   - post-deploy smoke and verify-hash checks.
 
+## S-24 Owner Reduction Gate
+
+- Execution preconditions and role responsibilities are fixed in:
+`docs/owner-role-downsizing-plan.md` (section: `Execution Preconditions (S-24-01)`).
+
 ## Telemetry Query
 
 - Read daily counters for a store:
