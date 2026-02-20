@@ -18,11 +18,17 @@ async function verifyStoreApprovalHashChainWithFirestore(storeId: string): Promi
   const snapshot = await db
     .collection("approval_log")
     .where("storeId", "==", storeId)
-    .orderBy("createdAtMs", "asc")
     .get();
 
+
+  const docs = [...snapshot.docs].sort((a, b) => {
+    const aMs = Number(a.get("createdAtMs") ?? 0);
+    const bMs = Number(b.get("createdAtMs") ?? 0);
+    return aMs - bMs;
+  });
+
   let prevHash = "GENESIS";
-  for (const row of snapshot.docs) {
+  for (const row of docs) {
     const payload: ApprovalChainPayload = {
       actor: "owner",
       action: row.get("action") as ApprovalAction,
