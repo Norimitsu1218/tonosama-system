@@ -302,7 +302,6 @@
   - missing/invalid decision fields => `BLOCK (metrics_decision_invalid)`
 - S-25-14 observe downstream rule:
   - summary/notify/draft branches must read `metrics.json` only
-  - `fail-reasons.txt` / `warn-reasons.txt` are evidence-only for one cycle
 
 ## S-21 Runtime Track
 

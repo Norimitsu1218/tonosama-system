@@ -55,8 +55,9 @@ jobs:
 
           fail=0
           warn=0
-          FAIL_REASONS="$OUT/fail-reasons.txt"
-          WARN_REASONS="$OUT/warn-reasons.txt"
+          FAIL_REASONS="$(mktemp)"
+          WARN_REASONS="$(mktemp)"
+          trap 'rm -f "$FAIL_REASONS" "$WARN_REASONS"' EXIT
           : > "$FAIL_REASONS"
           : > "$WARN_REASONS"
           echo "[INFO] output=$OUT"
@@ -1034,10 +1035,6 @@ jobs:
               "- pr_drafts: \(.drafts.pr // 0)\n" +
               "- drafts_summary: artifacts/ops-autopilot/<run>/drafts/summary-actions.md"
             ' "$OUT/metrics.json"
-            echo
-            echo "## Evidence Files (one-cycle legacy)"
-            echo "- fail-reasons.txt: evidence-only (not used for decision)"
-            echo "- warn-reasons.txt: evidence-only (not used for decision)"
             echo
             echo "## Next CLI"
             echo "1. gcloud run services describe $SERVICE --project $PROJECT_ID --region $REGION --format='value(spec.template.spec.serviceAccountName)'"
