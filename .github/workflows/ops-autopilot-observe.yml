@@ -288,8 +288,10 @@ jobs:
             --argjson error_unknown "$ERROR_UNKNOWN_COUNT" \
             '
             {
+              schema_version: "1.0.0",
               status: $status,
               run_id: $run_id,
+              next_task_id: "KEEP-MANUAL",
               counts: {
                 warn: $warn_total,
                 fail: $error_total
@@ -454,11 +456,20 @@ jobs:
             status="WARN"
           fi
 
+          next_task_id="KEEP-MANUAL"
+          case "$status" in
+            OK) next_task_id="S-24-07" ;;
+            WARN) next_task_id="S-24-07" ;;
+            FAIL) next_task_id="BLOCK-TRIAGE" ;;
+          esac
+
           jq --arg status "$status" \
+             --arg next_task_id "$next_task_id" \
              --argjson warn_total "$WARN_TOTAL" \
              --argjson error_total "$ERROR_TOTAL" \
              --argjson error_policy_guardrail "$ERROR_POLICY_GUARDRAIL_COUNT" '
             .status = $status
+            | .next_task_id = $next_task_id
             | .counts.warn = $warn_total
             | .counts.fail = $error_total
             | .fail_by_category.ERROR_POLICY_GUARDRAIL = $error_policy_guardrail

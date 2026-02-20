@@ -29,6 +29,11 @@ retry_gh() {
 
 mkdir -p "$OUT_ROOT"
 
+if [[ ! -x "$ACTIONS_ADAPTER" ]]; then
+  echo "BLOCK | run=unknown | reason=mcp_unavailable"
+  exit 2
+fi
+
 echo "[RUN] workflow dispatch: $WORKFLOW_FILE ($BRANCH)"
 if ! retry_gh "$GH_RETRY_MAX" "$ACTIONS_ADAPTER" dispatch "$WORKFLOW_FILE" "$BRANCH"; then
   echo "BLOCK | run=unknown | reason=dispatch_failed"
@@ -38,7 +43,7 @@ fi
 echo "[WAIT] resolve latest workflow_dispatch run id"
 run_id=""
 for _ in $(seq 1 30); do
-  run_id="$(retry_gh "$GH_RETRY_MAX" "$ACTIONS_ADAPTER" latest_run "$WORKFLOW_FILE" "$BRANCH" 2>/dev/null || true)"
+  run_id="$(retry_gh "$GH_RETRY_MAX" "$ACTIONS_ADAPTER" latest_run_id "$WORKFLOW_FILE" "$BRANCH" 2>/dev/null || true)"
   if [[ -n "$run_id" && "$run_id" != "null" ]]; then
     break
   fi
@@ -52,13 +57,16 @@ fi
 
 echo "[INFO] run=$run_id"
 if ! retry_gh "$GH_RETRY_MAX" "$ACTIONS_ADAPTER" watch "$run_id" "$POLL_SECONDS"; then
-  echo "BLOCK | run=$run_id | reason=run_failed"
+  echo "BLOCK | run=$run_id | reason=watch_failed"
   exit 2
 fi
 
 out_dir="$OUT_ROOT/$run_id"
 mkdir -p "$out_dir"
-retry_gh "$GH_RETRY_MAX" "$ACTIONS_ADAPTER" download "$run_id" "$out_dir" || true
+if ! retry_gh "$GH_RETRY_MAX" "$ACTIONS_ADAPTER" download_artifacts "$run_id" "$out_dir"; then
+  echo "BLOCK | run=$run_id | reason=artifact_missing"
+  exit 2
+fi
 
 metrics_path="$(find "$out_dir" -type f -name 'metrics.json' | head -n1 || true)"
 summary_path="$(find "$out_dir" -type f -name 'summary.md' | head -n1 || true)"
