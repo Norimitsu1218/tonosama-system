@@ -1,6 +1,17 @@
 # tonosama-system
 Runtime (Guest PWA) + Build-time (Owner) + Functions + Genkit (Okami)
 
+## Audit Status
+
+- Release audit: closed (Critical/High blockers resolved).
+- Ops guard: active with `ops-autopilot-observe` (read-only, fail-closed, artifact-required).
+- Improvement backlog (5):
+  - reduce `roles/editor` residuals with evidence-first rollout.
+  - define `roles/owner` downsizing policy (no immediate removal).
+  - keep WARN criteria fixed and versioned.
+  - update final audit summary on each status change.
+  - keep S-21 (guest SSR Node22) as separate track; production remains Node20 until stable.
+
 ## Guest PWA (Next.js)
 
 0. First command after clone (Owner bootstrap check)

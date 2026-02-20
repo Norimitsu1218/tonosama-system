@@ -218,6 +218,27 @@
 - Guardrail failures:
   - preflight is expected to fail on policy drift (permissions, rewrites, deny-all rules, missing tests).
 
+## S-22 Observe Policy
+
+- Workflow: `.github/workflows/ops-autopilot-observe.yml`.
+- Scope is read-only: runtime/IAM/TTL/workflow/smoke evidence collection only.
+- Any `FAIL` must end the workflow with non-zero exit (fail-closed).
+- Artifact upload is mandatory for every run.
+- WARN is allowed when:
+  - `roles/editor` or `roles/owner` bindings still exist.
+  - project-level `secretAccessor` bindings still exist.
+  - one of required TTL entries (`nonces`, `partner_nonces`, `owner_rate_limit`) is missing.
+- Summary must include explicit fail reasons and warn reasons.
+
+## S-21 Runtime Track
+
+- Guest SSR runtime hardening is a separate track from S-22.
+- Production baseline remains Node20 until guest SSR deploy path is stable on Node22.
+- Node22 retries must include:
+  - build log evidence,
+  - rollback command,
+  - post-deploy smoke and verify-hash checks.
+
 ## Telemetry Query
 
 - Read daily counters for a store:

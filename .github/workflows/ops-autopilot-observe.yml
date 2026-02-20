@@ -52,12 +52,20 @@ jobs:
 
           fail=0
           warn=0
+          FAIL_REASONS="$OUT/fail-reasons.txt"
+          WARN_REASONS="$OUT/warn-reasons.txt"
+          : > "$FAIL_REASONS"
+          : > "$WARN_REASONS"
           echo "[INFO] output=$OUT"
 
           gcloud run services describe "$SERVICE" \
             --project "$PROJECT_ID" \
             --region "$REGION" \
-            --format=json > "$OUT/run-service.json" || { fail=1; echo "[FAIL] run service describe failed" > "$OUT/run-service.error.txt"; }
+            --format=json > "$OUT/run-service.json" || {
+              fail=1
+              echo "[FAIL] run service describe failed" > "$OUT/run-service.error.txt"
+              echo "run_service_describe_failed" >> "$FAIL_REASONS"
+            }
 
           gcloud functions list \
             --project "$PROJECT_ID" \
@@ -66,6 +74,7 @@ jobs:
             --format="table(name,buildConfig.runtime,serviceConfig.serviceAccountEmail)" > "$OUT/functions-v2.txt" || {
               fail=1
               echo "[FAIL] functions list failed" > "$OUT/functions-v2.error.txt"
+              echo "functions_list_failed" >> "$FAIL_REASONS"
             }
 
           if gcloud alpha firestore fields ttls list --project "$PROJECT_ID" --format=json > "$OUT/firestore-ttls.json" 2>/dev/null; then
@@ -76,11 +85,13 @@ jobs:
             warn=1
             echo "[]" > "$OUT/firestore-ttls.json"
             echo "[WARN] ttl list unavailable" > "$OUT/firestore-ttls.warn.txt"
+            echo "ttl_list_unavailable" >> "$WARN_REASONS"
           fi
 
           gcloud projects get-iam-policy "$PROJECT_ID" --format=json > "$OUT/project-iam.json" || {
             fail=1
             echo "[FAIL] project iam read failed" > "$OUT/project-iam.error.txt"
+            echo "project_iam_read_failed" >> "$FAIL_REASONS"
           }
 
           jq -r '.bindings[] | select(.role=="roles/editor" or .role=="roles/owner") | .role + " => " + (.members|join(", "))' \
@@ -95,6 +106,7 @@ jobs:
               fail=1
               echo '{"workflow_runs":[]}' > "$OUT/gh-verify-runs.json"
               echo "[FAIL] cannot read verify workflow runs" > "$OUT/gh-verify-runs.error.txt"
+              echo "verify_workflow_runs_read_failed" >> "$FAIL_REASONS"
             }
 
           jq -r '.workflow_runs[] | [.id,.status,.conclusion,.created_at] | @tsv' \
@@ -104,11 +116,13 @@ jobs:
           if [ -z "$service_url" ]; then
             fail=1
             echo "[FAIL] service url missing" > "$OUT/smoke.error.txt"
+            echo "service_url_missing" >> "$FAIL_REASONS"
           else
             code="$(curl -sS -o "$OUT/smoke-body.txt" -D "$OUT/smoke-headers.txt" -w "%{http_code}" "$service_url" || true)"
             echo "$code" > "$OUT/smoke-status.txt"
             if [ "$code" != "200" ]; then
               fail=1
+              echo "smoke_http_${code}" >> "$FAIL_REASONS"
             fi
           fi
 
@@ -116,9 +130,11 @@ jobs:
           echo "$runtime_sa" > "$OUT/runtime-sa.txt"
           if [ "$runtime_sa" != "$EXPECTED_RUNTIME_SA" ]; then
             fail=1
+            echo "runtime_sa_mismatch" >> "$FAIL_REASONS"
           fi
           if echo "$runtime_sa" | grep -q 'compute@developer.gserviceaccount.com'; then
             fail=1
+            echo "runtime_sa_default_compute_detected" >> "$FAIL_REASONS"
           fi
 
           success_count="$(jq -r '[.workflow_runs[]? | select(.conclusion=="success")] | length' "$OUT/gh-verify-runs.json" 2>/dev/null || echo 0)"
@@ -127,19 +143,23 @@ jobs:
           fi
           if [ "$success_count" -lt 1 ]; then
             fail=1
+            echo "verify_workflow_success_count_zero" >> "$FAIL_REASONS"
           fi
 
           for key in nonces partner_nonces owner_rate_limit; do
             if ! jq -e --arg k "$key" 'tostring | test($k)' "$OUT/firestore-ttls.json" >/dev/null 2>&1; then
               warn=1
+              echo "ttl_missing_${key}" >> "$WARN_REASONS"
             fi
           done
 
           if [ -s "$OUT/project-iam-editor-owner.txt" ]; then
             warn=1
+            echo "project_has_editor_or_owner_bindings" >> "$WARN_REASONS"
           fi
           if [ -s "$OUT/secret-accessor-project.txt" ]; then
             warn=1
+            echo "project_has_secret_accessor_bindings" >> "$WARN_REASONS"
           fi
 
           status="OK"
@@ -159,6 +179,20 @@ jobs:
             echo "- Service: $SERVICE"
             echo "- Runtime SA: $runtime_sa"
             echo "- Verify success count (last 10): $success_count"
+            echo
+            echo "## Fail Reasons"
+            if [ -s "$FAIL_REASONS" ]; then
+              sed 's/^/- /' "$FAIL_REASONS"
+            else
+              echo "- (none)"
+            fi
+            echo
+            echo "## Warn Reasons"
+            if [ -s "$WARN_REASONS" ]; then
+              sed 's/^/- /' "$WARN_REASONS"
+            else
+              echo "- (none)"
+            fi
             echo
             echo "## Next CLI"
             echo "1. gcloud run services describe $SERVICE --project $PROJECT_ID --region $REGION --format='value(spec.template.spec.serviceAccountName)'"
