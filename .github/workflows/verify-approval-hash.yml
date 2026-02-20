@@ -70,7 +70,14 @@ jobs:
         run: npm ci
 
       - name: Install functions deps
-        run: npm --prefix functions ci
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f functions/package-lock.json ]; then
+            npm --prefix functions ci
+          else
+            npm --prefix functions install --no-audit --no-fund
+          fi
 
       - name: Build functions
         run: npm --prefix functions run build
