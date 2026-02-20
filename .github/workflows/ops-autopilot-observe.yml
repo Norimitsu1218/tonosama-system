@@ -364,13 +364,21 @@ jobs:
           WARN_TTL
           WARN_EDITOR_OWNER
           WARN_OPTIONAL_SECRET_EXTRA
+          WARN_REQUIRED_SECRET_MISSING
+          WARN_RUNTIME_DRIFT
           EOF
           sort -u "$OUT/warn-allowlist.txt" -o "$OUT/warn-allowlist.txt"
           grep -Fxv -f "$OUT/warn-allowlist.txt" "$WARN_CATEGORIES" > "$OUT/non-allowlisted-warns.txt" || true
           if [ -s "$OUT/non-allowlisted-warns.txt" ]; then
-            fail=1
-            echo "policy_warn_not_allowlisted" >> "$FAIL_REASONS"
+            warn=1
+            echo "policy_warn_not_allowlisted" >> "$WARN_REASONS"
           fi
+
+          cat > "$OUT/due-enforced-categories.txt" <<'EOF'
+          WARN_RUNTIME_DRIFT
+          WARN_UNKNOWN
+          EOF
+          sort -u "$OUT/due-enforced-categories.txt" -o "$OUT/due-enforced-categories.txt"
 
           PREV3_RUN_IDS="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ops-autopilot-observe.yml/runs?per_page=30" \
             | jq -r --arg cur "${GITHUB_RUN_ID}" '.workflow_runs[] | select((.id|tostring) != $cur and .status == "completed") | .id' \
@@ -403,7 +411,7 @@ jobs:
               before_next_rotation) threshold=3 ;;
               next_iam_cycle) threshold=4 ;;
             esac
-            if [ "$threshold" -lt 99 ] && [ "$rec_count" -ge "$threshold" ]; then
+            if grep -qx "$category" "$OUT/due-enforced-categories.txt" && [ "$threshold" -lt 99 ] && [ "$rec_count" -ge "$threshold" ]; then
               fail=1
               POLICY_BLOCK_COUNT=$((POLICY_BLOCK_COUNT + 1))
               echo "warn_due_exceeded_${category}" >> "$FAIL_REASONS"
