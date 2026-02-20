@@ -252,6 +252,8 @@
 - Human role is policy and approval boundary only.
 - Standard loop command:
 `sh ops/autopilot-loop.sh main-v2`
+- Adapter is swappable for MCP bridge:
+`ACTIONS_ADAPTER=ops/mcp/gh-actions-adapter.sh sh ops/autopilot-loop.sh main-v2`
 - Output contract:
 `CLOSE|KEEP|BLOCK | run=<id> | metrics=<path> | next=<TASK_ID>`
 - `BLOCK` requires immediate triage using evidence in:

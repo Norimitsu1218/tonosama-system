@@ -6,6 +6,7 @@ WORKFLOW_FILE="${2:-ops-autopilot-observe.yml}"
 OUT_ROOT="${3:-artifacts/ops-observe}"
 POLL_SECONDS="${POLL_SECONDS:-5}"
 GH_RETRY_MAX="${GH_RETRY_MAX:-3}"
+ACTIONS_ADAPTER="${ACTIONS_ADAPTER:-ops/mcp/gh-actions-adapter.sh}"
 
 retry_gh() {
   local max="${1:-3}"
@@ -29,7 +30,7 @@ retry_gh() {
 mkdir -p "$OUT_ROOT"
 
 echo "[RUN] workflow dispatch: $WORKFLOW_FILE ($BRANCH)"
-if ! retry_gh "$GH_RETRY_MAX" gh workflow run "$WORKFLOW_FILE" --ref "$BRANCH"; then
+if ! retry_gh "$GH_RETRY_MAX" "$ACTIONS_ADAPTER" dispatch "$WORKFLOW_FILE" "$BRANCH"; then
   echo "BLOCK | run=unknown | reason=dispatch_failed"
   exit 2
 fi
@@ -37,7 +38,7 @@ fi
 echo "[WAIT] resolve latest workflow_dispatch run id"
 run_id=""
 for _ in $(seq 1 30); do
-  run_id="$(retry_gh "$GH_RETRY_MAX" gh run list --workflow "$WORKFLOW_FILE" --event workflow_dispatch --branch "$BRANCH" --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)"
+  run_id="$(retry_gh "$GH_RETRY_MAX" "$ACTIONS_ADAPTER" latest_run "$WORKFLOW_FILE" "$BRANCH" 2>/dev/null || true)"
   if [[ -n "$run_id" && "$run_id" != "null" ]]; then
     break
   fi
@@ -50,14 +51,14 @@ if [[ -z "$run_id" || "$run_id" == "null" ]]; then
 fi
 
 echo "[INFO] run=$run_id"
-if ! retry_gh "$GH_RETRY_MAX" gh run watch "$run_id" --exit-status --interval "$POLL_SECONDS"; then
+if ! retry_gh "$GH_RETRY_MAX" "$ACTIONS_ADAPTER" watch "$run_id" "$POLL_SECONDS"; then
   echo "BLOCK | run=$run_id | reason=run_failed"
   exit 2
 fi
 
 out_dir="$OUT_ROOT/$run_id"
 mkdir -p "$out_dir"
-retry_gh "$GH_RETRY_MAX" gh run download "$run_id" -D "$out_dir" || true
+retry_gh "$GH_RETRY_MAX" "$ACTIONS_ADAPTER" download "$run_id" "$out_dir" || true
 
 metrics_path="$(find "$out_dir" -type f -name 'metrics.json' | head -n1 || true)"
 summary_path="$(find "$out_dir" -type f -name 'summary.md' | head -n1 || true)"
@@ -84,4 +85,4 @@ case "$status" in
 esac
 
 echo "$decision | run=$run_id | metrics=$metrics_path | summary=${summary_path:-none} | next=$next_task"
-gh run view "$run_id" --json url --jq '.url' | sed 's#^#[URL] #'
+retry_gh "$GH_RETRY_MAX" "$ACTIONS_ADAPTER" url "$run_id" | sed 's#^#[URL] #' || true
