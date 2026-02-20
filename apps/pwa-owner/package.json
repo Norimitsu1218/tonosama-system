@@ -2,6 +2,9 @@
   "name": "@tonosama/pwa-owner",
   "private": true,
   "version": "0.1.0",
+  "engines": {
+    "node": "22"
+  },
   "scripts": {
     "dev": "next dev --port 3011",
     "build": "next build",
