@@ -1,0 +1,181 @@
+name: ops-autopilot-observe
+
+on:
+  schedule:
+    - cron: "30 20 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: ops-autopilot-observe-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  observe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      PROJECT_ID: apicius-6bcae
+      REGION: asia-northeast1
+      SERVICE: ssrapicius6bcae
+      VERIFY_WORKFLOW_FILE: verify-approval-hash.yml
+      EXPECTED_RUNTIME_SA: sa-ssr-runtime@apicius-6bcae.iam.gserviceaccount.com
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Auth to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_WIF_SERVICE_ACCOUNT }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Collect Evidence And Classify
+        id: classify
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TS="$(date -u +%Y%m%d-%H%M%S)"
+          OUT="artifacts/ops-autopilot/${TS}"
+          mkdir -p "$OUT"
+          echo "out=$OUT" >> "$GITHUB_OUTPUT"
+
+          fail=0
+          warn=0
+          echo "[INFO] output=$OUT"
+
+          gcloud run services describe "$SERVICE" \
+            --project "$PROJECT_ID" \
+            --region "$REGION" \
+            --format=json > "$OUT/run-service.json" || { fail=1; echo "[FAIL] run service describe failed" > "$OUT/run-service.error.txt"; }
+
+          gcloud functions list \
+            --project "$PROJECT_ID" \
+            --v2 \
+            --regions "$REGION" \
+            --format="table(name,buildConfig.runtime,serviceConfig.serviceAccountEmail)" > "$OUT/functions-v2.txt" || {
+              fail=1
+              echo "[FAIL] functions list failed" > "$OUT/functions-v2.error.txt"
+            }
+
+          if gcloud alpha firestore fields ttls list --project "$PROJECT_ID" --format=json > "$OUT/firestore-ttls.json" 2>/dev/null; then
+            :
+          elif gcloud beta firestore fields ttls list --project "$PROJECT_ID" --format=json > "$OUT/firestore-ttls.json" 2>/dev/null; then
+            :
+          else
+            warn=1
+            echo "[]" > "$OUT/firestore-ttls.json"
+            echo "[WARN] ttl list unavailable" > "$OUT/firestore-ttls.warn.txt"
+          fi
+
+          gcloud projects get-iam-policy "$PROJECT_ID" --format=json > "$OUT/project-iam.json" || {
+            fail=1
+            echo "[FAIL] project iam read failed" > "$OUT/project-iam.error.txt"
+          }
+
+          jq -r '.bindings[] | select(.role=="roles/editor" or .role=="roles/owner") | .role + " => " + (.members|join(", "))' \
+            "$OUT/project-iam.json" > "$OUT/project-iam-editor-owner.txt" || true
+
+          gcloud projects get-iam-policy "$PROJECT_ID" --format=json \
+            | jq -r '.bindings[] | select(.role=="roles/secretmanager.secretAccessor") | .members[]' \
+            > "$OUT/secret-accessor-project.txt" || true
+
+          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/${VERIFY_WORKFLOW_FILE}/runs?per_page=10" \
+            > "$OUT/gh-verify-runs.json" || {
+              fail=1
+              echo "[FAIL] cannot read verify workflow runs" > "$OUT/gh-verify-runs.error.txt"
+            }
+
+          jq -r '.workflow_runs[] | [.id,.status,.conclusion,.created_at] | @tsv' \
+            "$OUT/gh-verify-runs.json" > "$OUT/gh-verify-runs.txt" || true
+
+          service_url="$(jq -r '.status.url // empty' "$OUT/run-service.json" || true)"
+          if [ -z "$service_url" ]; then
+            fail=1
+            echo "[FAIL] service url missing" > "$OUT/smoke.error.txt"
+          else
+            code="$(curl -sS -o "$OUT/smoke-body.txt" -D "$OUT/smoke-headers.txt" -w "%{http_code}" "$service_url" || true)"
+            echo "$code" > "$OUT/smoke-status.txt"
+            if [ "$code" != "200" ]; then
+              fail=1
+            fi
+          fi
+
+          runtime_sa="$(jq -r '.spec.template.spec.serviceAccountName // empty' "$OUT/run-service.json" || true)"
+          echo "$runtime_sa" > "$OUT/runtime-sa.txt"
+          if [ "$runtime_sa" != "$EXPECTED_RUNTIME_SA" ]; then
+            fail=1
+          fi
+          if echo "$runtime_sa" | grep -q 'compute@developer.gserviceaccount.com'; then
+            fail=1
+          fi
+
+          success_count="$(jq '[.workflow_runs[] | select(.conclusion=="success")] | length' "$OUT/gh-verify-runs.json" 2>/dev/null || echo 0)"
+          if [ "$success_count" -lt 1 ]; then
+            fail=1
+          fi
+
+          for key in nonces partner_nonces owner_rate_limit; do
+            if ! jq -e --arg k "$key" 'tostring | test($k)' "$OUT/firestore-ttls.json" >/dev/null 2>&1; then
+              warn=1
+            fi
+          done
+
+          if [ -s "$OUT/project-iam-editor-owner.txt" ]; then
+            warn=1
+          fi
+          if [ -s "$OUT/secret-accessor-project.txt" ]; then
+            warn=1
+          fi
+
+          status="OK"
+          if [ "$fail" -eq 1 ]; then
+            status="FAIL"
+          elif [ "$warn" -eq 1 ]; then
+            status="WARN"
+          fi
+          echo "$status" > "$OUT/status.txt"
+
+          {
+            echo "# Ops Autopilot Observe"
+            echo
+            echo "- Status: $status"
+            echo "- Project: $PROJECT_ID"
+            echo "- Region: $REGION"
+            echo "- Service: $SERVICE"
+            echo "- Runtime SA: $runtime_sa"
+            echo "- Verify success count (last 10): $success_count"
+            echo
+            echo "## Next CLI"
+            echo "1. gcloud run services describe $SERVICE --project $PROJECT_ID --region $REGION --format='value(spec.template.spec.serviceAccountName)'"
+            echo "2. gcloud functions list --project $PROJECT_ID --v2 --regions $REGION --format='table(name,buildConfig.runtime,serviceConfig.serviceAccountEmail)'"
+            echo "3. gh run list --workflow $VERIFY_WORKFLOW_FILE --limit 5"
+          } > "$OUT/summary.md"
+
+          if [ "$status" = "FAIL" ]; then
+            echo "status=FAIL" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          if [ "$status" = "WARN" ]; then
+            echo "status=WARN" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "status=OK" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Evidence Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ops-autopilot-observe-${{ github.run_id }}
+          path: ${{ steps.classify.outputs.out }}
+          if-no-files-found: error
+          retention-days: 30
