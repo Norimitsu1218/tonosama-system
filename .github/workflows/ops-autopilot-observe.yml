@@ -102,6 +102,17 @@ jobs:
             | jq -r '.bindings[] | select(.role=="roles/secretmanager.secretAccessor") | .members[]' \
             > "$OUT/secret-accessor-project.txt" || true
 
+          cat > "$OUT/required-secrets.txt" <<'EOF'
+          GATE_TOKEN_SECRET
+          OWNER_API_TOKEN
+          TELEMETRY_SALT_SECRET
+          STRIPE_SECRET_KEY
+          STRIPE_WEBHOOK_SECRET
+          BILLING_SUCCESS_URL
+          BILLING_CANCEL_URL
+          EOF
+          sort -u "$OUT/required-secrets.txt" -o "$OUT/required-secrets.txt"
+
           if gcloud secrets list --project "$PROJECT_ID" --format='value(name)' > "$OUT/secret-names.txt" 2>/dev/null; then
             : > "$OUT/secret-accessor-runtime-sa.txt"
             while IFS= read -r secret_name; do
@@ -118,10 +129,15 @@ jobs:
               fi
             done < "$OUT/secret-names.txt"
             sort -u "$OUT/secret-accessor-runtime-sa.txt" -o "$OUT/secret-accessor-runtime-sa.txt" || true
+
+            comm -23 "$OUT/required-secrets.txt" "$OUT/secret-accessor-runtime-sa.txt" > "$OUT/missing-required-secret-accessor.txt" || true
+            comm -13 "$OUT/required-secrets.txt" "$OUT/secret-accessor-runtime-sa.txt" > "$OUT/extra-runtime-secret-accessor.txt" || true
           else
             warn=1
             echo "secret_list_failed" >> "$WARN_REASONS"
             : > "$OUT/secret-accessor-runtime-sa.txt"
+            : > "$OUT/missing-required-secret-accessor.txt"
+            : > "$OUT/extra-runtime-secret-accessor.txt"
           fi
 
           gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/${VERIFY_WORKFLOW_FILE}/runs?per_page=10" \
@@ -184,9 +200,13 @@ jobs:
             warn=1
             echo "project_has_secret_accessor_bindings" >> "$WARN_REASONS"
           fi
-          if [ -s "$OUT/secret-accessor-runtime-sa.txt" ]; then
+          if [ -s "$OUT/missing-required-secret-accessor.txt" ]; then
             warn=1
-            echo "runtime_sa_has_secret_accessor_bindings" >> "$WARN_REASONS"
+            echo "runtime_sa_missing_required_secret_accessor" >> "$WARN_REASONS"
+          fi
+          if [ -s "$OUT/extra-runtime-secret-accessor.txt" ]; then
+            warn=1
+            echo "runtime_sa_has_extra_secret_accessor" >> "$WARN_REASONS"
           fi
 
           status="OK"
@@ -211,6 +231,14 @@ jobs:
               sed 's/^/  - /' "$OUT/secret-accessor-runtime-sa.txt"
             else
               echo "- Runtime SA secret bindings: (none)"
+            fi
+            if [ -s "$OUT/missing-required-secret-accessor.txt" ]; then
+              echo "- Missing required runtime secret bindings:"
+              sed 's/^/  - /' "$OUT/missing-required-secret-accessor.txt"
+            fi
+            if [ -s "$OUT/extra-runtime-secret-accessor.txt" ]; then
+              echo "- Extra runtime secret bindings:"
+              sed 's/^/  - /' "$OUT/extra-runtime-secret-accessor.txt"
             fi
             echo
             echo "## Fail Reasons"
