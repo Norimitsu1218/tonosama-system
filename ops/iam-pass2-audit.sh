@@ -45,6 +45,17 @@ jq -r '.bindings[] | select(.role=="roles/secretmanager.secretAccessor") | .memb
   "$OUT/project-iam.json" | sort -u > "$OUT/project-secret-accessor-members.txt"
 
 {
+  echo "# HOLD Reasons"
+  echo
+  echo "- HOLD_PLATFORM_MANAGED:"
+  echo "  - platform-managed identities are excluded from immediate removal."
+  echo "  - requires dependency proof and rollback plan before any change."
+  echo "- HOLD_HUMAN_OWNER_POLICY:"
+  echo "  - direct owner bindings are reduced only after duty split (deploy/runtime/audit)."
+  echo "  - no blanket remove in this phase."
+} > "$OUT/HOLD-REASONS.md"
+
+{
   echo "# IAM Pass2 Summary"
   echo
   echo "- Project: $PROJECT_ID"
@@ -62,6 +73,9 @@ jq -r '.bindings[] | select(.role=="roles/secretmanager.secretAccessor") | .memb
   echo "## Editor/Owner Classification"
   echo "- Format: role<TAB>member<TAB>bucket"
   sed 's/^/- /' "$OUT/editor-owner-classified.tsv"
+  echo
+  echo "## HOLD Evidence"
+  echo "- $OUT/HOLD-REASONS.md"
   echo
   echo "## Next CLI"
   echo "1. cat $OUT/editor-owner-classified.tsv"

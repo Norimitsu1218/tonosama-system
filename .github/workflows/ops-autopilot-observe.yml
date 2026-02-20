@@ -23,6 +23,7 @@ jobs:
       SERVICE: ssrapicius6bcae
       VERIFY_WORKFLOW_FILE: verify-approval-hash.yml
       EXPECTED_RUNTIME_SA: sa-ssr-runtime@apicius-6bcae.iam.gserviceaccount.com
+      RUNTIME_SA_EMAIL: sa-ssr-runtime@apicius-6bcae.iam.gserviceaccount.com
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Checkout
@@ -101,6 +102,28 @@ jobs:
             | jq -r '.bindings[] | select(.role=="roles/secretmanager.secretAccessor") | .members[]' \
             > "$OUT/secret-accessor-project.txt" || true
 
+          if gcloud secrets list --project "$PROJECT_ID" --format='value(name)' > "$OUT/secret-names.txt" 2>/dev/null; then
+            : > "$OUT/secret-accessor-runtime-sa.txt"
+            while IFS= read -r secret_name; do
+              [ -z "$secret_name" ] && continue
+              if gcloud secrets get-iam-policy "$secret_name" --project "$PROJECT_ID" --format=json > "$OUT/secret-${secret_name}.json" 2>/dev/null; then
+                jq -r --arg m "serviceAccount:${RUNTIME_SA_EMAIL}" --arg s "$secret_name" '
+                  .bindings[]? | select(.role=="roles/secretmanager.secretAccessor")
+                  | select(any(.members[]?; . == $m))
+                  | $s
+                ' "$OUT/secret-${secret_name}.json" >> "$OUT/secret-accessor-runtime-sa.txt" || true
+              else
+                warn=1
+                echo "secret_policy_read_failed_${secret_name}" >> "$WARN_REASONS"
+              fi
+            done < "$OUT/secret-names.txt"
+            sort -u "$OUT/secret-accessor-runtime-sa.txt" -o "$OUT/secret-accessor-runtime-sa.txt" || true
+          else
+            warn=1
+            echo "secret_list_failed" >> "$WARN_REASONS"
+            : > "$OUT/secret-accessor-runtime-sa.txt"
+          fi
+
           gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/${VERIFY_WORKFLOW_FILE}/runs?per_page=10" \
             > "$OUT/gh-verify-runs.json" || {
               fail=1
@@ -161,6 +184,10 @@ jobs:
             warn=1
             echo "project_has_secret_accessor_bindings" >> "$WARN_REASONS"
           fi
+          if [ -s "$OUT/secret-accessor-runtime-sa.txt" ]; then
+            warn=1
+            echo "runtime_sa_has_secret_accessor_bindings" >> "$WARN_REASONS"
+          fi
 
           status="OK"
           if [ "$fail" -eq 1 ]; then
@@ -179,6 +206,12 @@ jobs:
             echo "- Service: $SERVICE"
             echo "- Runtime SA: $runtime_sa"
             echo "- Verify success count (last 10): $success_count"
+            if [ -s "$OUT/secret-accessor-runtime-sa.txt" ]; then
+              echo "- Runtime SA secret bindings:"
+              sed 's/^/  - /' "$OUT/secret-accessor-runtime-sa.txt"
+            else
+              echo "- Runtime SA secret bindings: (none)"
+            fi
             echo
             echo "## Fail Reasons"
             if [ -s "$FAIL_REASONS" ]; then
