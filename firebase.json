@@ -10,7 +10,8 @@
       "target": "guest",
       "source": "apps/pwa-guest",
       "frameworksBackend": {
-        "region": "asia-northeast1"
+        "region": "asia-northeast1",
+        "runtime": "nodejs22"
       },
       "headers": [
         {
@@ -170,7 +171,8 @@
       "target": "owner",
       "source": "apps/pwa-owner",
       "frameworksBackend": {
-        "region": "asia-northeast1"
+        "region": "asia-northeast1",
+        "runtime": "nodejs22"
       },
       "headers": [
         {
