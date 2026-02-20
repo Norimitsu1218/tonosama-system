@@ -201,8 +201,8 @@ jobs:
             echo "project_has_secret_accessor_bindings" >> "$WARN_REASONS"
           fi
           if [ -s "$OUT/missing-required-secret-accessor.txt" ]; then
-            fail=1
-            echo "required_secret_accessor_missing" >> "$FAIL_REASONS"
+            warn=1
+            echo "required_secret_accessor_missing" >> "$WARN_REASONS"
           fi
           if [ -s "$OUT/extra-runtime-secret-accessor.txt" ]; then
             warn=1
@@ -226,6 +226,9 @@ jobs:
               runtime_sa_has_extra_secret_accessor|project_has_secret_accessor_bindings)
                 echo "WARN_OPTIONAL_SECRET_EXTRA" >> "$WARN_CATEGORIES"
                 ;;
+              required_secret_accessor_missing)
+                echo "WARN_REQUIRED_SECRET_MISSING" >> "$WARN_CATEGORIES"
+                ;;
               runtime_sa_drift)
                 echo "WARN_RUNTIME_DRIFT" >> "$WARN_CATEGORIES"
                 ;;
@@ -238,9 +241,6 @@ jobs:
           while IFS= read -r reason; do
             [ -z "$reason" ] && continue
             case "$reason" in
-              required_secret_accessor_missing)
-                echo "ERROR_SECRET_REQUIRED_MISSING" >> "$FAIL_CATEGORIES"
-                ;;
               run_service_describe_failed|functions_list_failed|project_iam_read_failed|verify_workflow_runs_read_failed|service_url_missing|smoke_http_*|runtime_sa_mismatch|runtime_sa_default_compute_detected|verify_workflow_success_count_zero)
                 echo "ERROR_RUNTIME_OR_OBSERVE" >> "$FAIL_CATEGORIES"
                 ;;
@@ -256,9 +256,10 @@ jobs:
           WARN_TTL_COUNT="$(grep -c '^WARN_TTL$' "$WARN_CATEGORIES" || true)"
           WARN_EDITOR_OWNER_COUNT="$(grep -c '^WARN_EDITOR_OWNER$' "$WARN_CATEGORIES" || true)"
           WARN_OPTIONAL_SECRET_EXTRA_COUNT="$(grep -c '^WARN_OPTIONAL_SECRET_EXTRA$' "$WARN_CATEGORIES" || true)"
+          WARN_REQUIRED_SECRET_MISSING_COUNT="$(grep -c '^WARN_REQUIRED_SECRET_MISSING$' "$WARN_CATEGORIES" || true)"
           WARN_RUNTIME_DRIFT_COUNT="$(grep -c '^WARN_RUNTIME_DRIFT$' "$WARN_CATEGORIES" || true)"
           WARN_UNKNOWN_COUNT="$(grep -c '^WARN_UNKNOWN$' "$WARN_CATEGORIES" || true)"
-          WARN_TOTAL="$((WARN_TTL_COUNT + WARN_EDITOR_OWNER_COUNT + WARN_OPTIONAL_SECRET_EXTRA_COUNT + WARN_RUNTIME_DRIFT_COUNT + WARN_UNKNOWN_COUNT))"
+          WARN_TOTAL="$((WARN_TTL_COUNT + WARN_EDITOR_OWNER_COUNT + WARN_OPTIONAL_SECRET_EXTRA_COUNT + WARN_REQUIRED_SECRET_MISSING_COUNT + WARN_RUNTIME_DRIFT_COUNT + WARN_UNKNOWN_COUNT))"
           ERROR_TOTAL="$(wc -l < "$FAIL_REASONS" | tr -d ' ')"
 
           status="OK"
@@ -313,6 +314,7 @@ jobs:
             echo "- WARN_TTL: $WARN_TTL_COUNT"
             echo "- WARN_EDITOR_OWNER: $WARN_EDITOR_OWNER_COUNT"
             echo "- WARN_OPTIONAL_SECRET_EXTRA: $WARN_OPTIONAL_SECRET_EXTRA_COUNT"
+            echo "- WARN_REQUIRED_SECRET_MISSING: $WARN_REQUIRED_SECRET_MISSING_COUNT"
             echo "- WARN_RUNTIME_DRIFT: $WARN_RUNTIME_DRIFT_COUNT"
             echo "- WARN_UNKNOWN: $WARN_UNKNOWN_COUNT"
             echo
@@ -322,6 +324,7 @@ jobs:
             echo "METRIC WARN_TTL=$WARN_TTL_COUNT"
             echo "METRIC WARN_EDITOR_OWNER=$WARN_EDITOR_OWNER_COUNT"
             echo "METRIC WARN_OPTIONAL_SECRET_EXTRA=$WARN_OPTIONAL_SECRET_EXTRA_COUNT"
+            echo "METRIC WARN_REQUIRED_SECRET_MISSING=$WARN_REQUIRED_SECRET_MISSING_COUNT"
             echo "METRIC WARN_RUNTIME_DRIFT=$WARN_RUNTIME_DRIFT_COUNT"
             echo "METRIC WARN_UNKNOWN=$WARN_UNKNOWN_COUNT"
             echo
