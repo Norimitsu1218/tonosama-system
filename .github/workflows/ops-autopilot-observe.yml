@@ -465,6 +465,111 @@ jobs:
           ' "$OUT/metrics.json" > "$OUT/metrics.tmp.json"
           mv "$OUT/metrics.tmp.json" "$OUT/metrics.json"
 
+          DRAFT_ISSUES_DIR="$OUT/drafts/issues"
+          DRAFT_PRS_DIR="$OUT/drafts/prs"
+          mkdir -p "$DRAFT_ISSUES_DIR" "$DRAFT_PRS_DIR"
+
+          decode_field() {
+            printf '%s' "$1" | base64 --decode | jq -r "$2"
+          }
+
+          jq -r '.actions[]? | @base64' "$OUT/metrics.json" | while IFS= read -r row; do
+            [ -z "$row" ] && continue
+            category="$(decode_field "$row" '.category // "UNKNOWN"')"
+            action_class="$(decode_field "$row" '.action_class // "monitor"')"
+            priority="$(decode_field "$row" '.priority // "P3"')"
+            effective_priority="$(decode_field "$row" '.effective_priority // .priority // "P3"')"
+            owner="$(decode_field "$row" '.owner // "none"')"
+            due_hint="$(decode_field "$row" '.due_hint // "none"')"
+            count="$(decode_field "$row" '.count // 0')"
+            recurrence="$(decode_field "$row" '.recurrence_count // 0')"
+
+            draft_slug="$(printf '%s' "${category}" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_' '_')"
+            issue_needed=0
+            if [ "$action_class" = "block" ]; then
+              issue_needed=1
+            elif { [ "$effective_priority" = "P0" ] || [ "$effective_priority" = "P1" ]; } && [ "$recurrence" -ge 3 ]; then
+              issue_needed=1
+            fi
+
+            if [ "$issue_needed" -eq 1 ]; then
+              cat > "$DRAFT_ISSUES_DIR/issue_${draft_slug}.md" <<EOF
+# [AUTO-DRAFT] $category
+
+## Why
+- action_class: $action_class
+- priority: $priority
+- effective_priority: $effective_priority
+- count: $count
+- recurrence_count: $recurrence
+- owner: $owner
+- due_hint: $due_hint
+- run: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
+## Suggested Next Step
+1. Confirm scope using \`artifacts/ops-autopilot/\`
+2. Apply smallest remediation for \`$category\`
+3. Re-run \`ops-autopilot-observe\` and verify category resolved
+
+## Rollback
+- No automatic production change performed.
+EOF
+            fi
+
+            pr_needed=0
+            if [ "$action_class" = "owner_action" ]; then
+              case "$category" in
+                WARN_RUNTIME_DRIFT|WARN_REQUIRED_SECRET_MISSING|WARN_TTL)
+                  pr_needed=1
+                  ;;
+              esac
+            fi
+            if [ "$pr_needed" -eq 1 ]; then
+              cat > "$DRAFT_PRS_DIR/pr_${draft_slug}.md" <<EOF
+# [AUTO-DRAFT PR] $category
+
+## Intent
+- Prepare minimal diff proposal for \`$category\`
+- No code was changed automatically
+
+## Candidate Files
+- \`.github/workflows/ops-autopilot-observe.yml\`
+- \`ops/runbook.md\`
+- \`docs/iam-reduction-policy.md\`
+
+## Acceptance
+1. Category count decreases on next run
+2. No new FAIL categories introduced
+3. Evidence artifact retained
+EOF
+            fi
+          done
+
+          ISSUE_DRAFT_COUNT="$(find "$DRAFT_ISSUES_DIR" -type f -name '*.md' | wc -l | tr -d ' ')"
+          PR_DRAFT_COUNT="$(find "$DRAFT_PRS_DIR" -type f -name '*.md' | wc -l | tr -d ' ')"
+
+          jq --argjson issue_drafts "$ISSUE_DRAFT_COUNT" \
+             --argjson pr_drafts "$PR_DRAFT_COUNT" '
+            .drafts = {
+              issue: $issue_drafts,
+              pr: $pr_drafts
+            }
+          ' "$OUT/metrics.json" > "$OUT/metrics.tmp.json"
+          mv "$OUT/metrics.tmp.json" "$OUT/metrics.json"
+
+          {
+            echo "# Draft Candidates"
+            echo
+            echo "- issue_drafts: $ISSUE_DRAFT_COUNT"
+            echo "- pr_drafts: $PR_DRAFT_COUNT"
+            echo
+            echo "## Issue Drafts"
+            find "$DRAFT_ISSUES_DIR" -maxdepth 1 -type f -name '*.md' -print | sed 's#^#- #' || true
+            echo
+            echo "## PR Drafts"
+            find "$DRAFT_PRS_DIR" -maxdepth 1 -type f -name '*.md' -print | sed 's#^#- #' || true
+          } > "$OUT/drafts/summary-actions.md"
+
           echo "$status" > "$OUT/status.txt"
 
           {
@@ -534,7 +639,9 @@ jobs:
               "METRIC ERROR_RUNTIME_OR_OBSERVE=\(.fail_by_category.ERROR_RUNTIME_OR_OBSERVE // 0)\n" +
               "METRIC ERROR_SECRET_REQUIRED_MISSING=\(.fail_by_category.ERROR_SECRET_REQUIRED_MISSING // 0)\n" +
               "METRIC ERROR_POLICY_GUARDRAIL=\(.fail_by_category.ERROR_POLICY_GUARDRAIL // 0)\n" +
-              "METRIC ERROR_UNKNOWN=\(.fail_by_category.ERROR_UNKNOWN // 0)"
+              "METRIC ERROR_UNKNOWN=\(.fail_by_category.ERROR_UNKNOWN // 0)\n" +
+              "METRIC ISSUE_DRAFTS=\(.drafts.issue // 0)\n" +
+              "METRIC PR_DRAFTS=\(.drafts.pr // 0)"
             ' "$OUT/metrics.json"
             echo
             echo "## Actions"
@@ -558,6 +665,13 @@ jobs:
                 "- resolved_fail_categories: \((.resolved_fail_categories | join(", ")) // "(none)")"
               end
             ' "$OUT/metrics-diff.json"
+            echo
+            echo "## Draft Proposals"
+            jq -r '
+              "- issue_drafts: \(.drafts.issue // 0)\n" +
+              "- pr_drafts: \(.drafts.pr // 0)\n" +
+              "- drafts_summary: artifacts/ops-autopilot/<run>/drafts/summary-actions.md"
+            ' "$OUT/metrics.json"
             echo
             echo "## Next CLI"
             echo "1. gcloud run services describe $SERVICE --project $PROJECT_ID --region $REGION --format='value(spec.template.spec.serviceAccountName)'"
