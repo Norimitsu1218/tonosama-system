@@ -232,6 +232,19 @@
 - IAM pass2 baseline command:
 `PROJECT_ID=apicius-6bcae REGION=asia-northeast1 SERVICE=ssrapicius6bcae sh ops/iam-pass2-audit.sh`
 
+## S-24 Compressed Mode
+
+- Task handling format is fixed to one line:
+`<TASK_ID>: CLOSE|KEEP|BLOCK | commit=<sha> | run=<id> | next=<TASK_ID>`
+- Use one task per cycle (single concern, single commit).
+- Use fixed verification bundle:
+`sh ops/quick-check.sh main-v2`
+- Ask for confirmation only when operation is destructive:
+  - deletion with production impact
+  - human user permission revocation
+  - billing/public exposure change
+  - rollback-impossible change
+
 ## S-21 Runtime Track
 
 - Guest SSR runtime hardening is a separate track from S-22.

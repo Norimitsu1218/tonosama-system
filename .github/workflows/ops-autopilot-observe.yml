@@ -468,6 +468,13 @@ jobs:
           DRAFT_ISSUES_DIR="$OUT/drafts/issues"
           DRAFT_PRS_DIR="$OUT/drafts/prs"
           mkdir -p "$DRAFT_ISSUES_DIR" "$DRAFT_PRS_DIR"
+          CURRENT_DRAFT_INDEX="$OUT/drafts/draft-index.tsv"
+          : > "$CURRENT_DRAFT_INDEX"
+          PREV_DRAFT_INDEX="$(find "$OUT/previous" -path '*/drafts/draft-index.tsv' -type f | head -n1 || true)"
+          ISSUE_DRAFT_NEW=0
+          ISSUE_DRAFT_SKIPPED=0
+          PR_DRAFT_NEW=0
+          PR_DRAFT_SKIPPED=0
 
           decode_field() {
             printf '%s' "$1" | base64 --decode | jq -r "$2"
@@ -483,6 +490,7 @@ jobs:
             due_hint="$(decode_field "$row" '.due_hint // "none"')"
             count="$(decode_field "$row" '.count // 0')"
             recurrence="$(decode_field "$row" '.recurrence_count // 0')"
+            dedupe_key="${category}|${owner}|${action_class}"
 
             draft_slug="$(printf '%s' "${category}" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_' '_')"
             issue_needed=0
@@ -493,27 +501,40 @@ jobs:
             fi
 
             if [ "$issue_needed" -eq 1 ]; then
-              {
-                echo "# [AUTO-DRAFT] $category"
-                echo
-                echo "## Why"
-                echo "- action_class: $action_class"
-                echo "- priority: $priority"
-                echo "- effective_priority: $effective_priority"
-                echo "- count: $count"
-                echo "- recurrence_count: $recurrence"
-                echo "- owner: $owner"
-                echo "- due_hint: $due_hint"
-                echo "- run: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-                echo
-                echo "## Suggested Next Step"
-                echo "1. Confirm scope using \`artifacts/ops-autopilot/\`"
-                echo "2. Apply smallest remediation for \`$category\`"
-                echo "3. Re-run \`ops-autopilot-observe\` and verify category resolved"
-                echo
-                echo "## Rollback"
-                echo "- No automatic production change performed."
-              } > "$DRAFT_ISSUES_DIR/issue_${draft_slug}.md"
+              prev_rec=0
+              if [ -n "${PREV_DRAFT_INDEX:-}" ] && [ -f "$PREV_DRAFT_INDEX" ]; then
+                prev_rec="$(awk -F'\t' -v kind="issue" -v k="$dedupe_key" '$1==kind && $2==k{print $3; exit}' "$PREV_DRAFT_INDEX" 2>/dev/null || echo 0)"
+              fi
+              if ! [[ "$prev_rec" =~ ^[0-9]+$ ]]; then
+                prev_rec=0
+              fi
+              if [ "$recurrence" -gt "$prev_rec" ]; then
+                {
+                  echo "# [AUTO-DRAFT] $category"
+                  echo
+                  echo "## Why"
+                  echo "- action_class: $action_class"
+                  echo "- priority: $priority"
+                  echo "- effective_priority: $effective_priority"
+                  echo "- count: $count"
+                  echo "- recurrence_count: $recurrence"
+                  echo "- owner: $owner"
+                  echo "- due_hint: $due_hint"
+                  echo "- run: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+                  echo
+                  echo "## Suggested Next Step"
+                  echo "1. Confirm scope using \`artifacts/ops-autopilot/\`"
+                  echo "2. Apply smallest remediation for \`$category\`"
+                  echo "3. Re-run \`ops-autopilot-observe\` and verify category resolved"
+                  echo
+                  echo "## Rollback"
+                  echo "- No automatic production change performed."
+                } > "$DRAFT_ISSUES_DIR/issue_${draft_slug}.md"
+                ISSUE_DRAFT_NEW=$((ISSUE_DRAFT_NEW + 1))
+              else
+                ISSUE_DRAFT_SKIPPED=$((ISSUE_DRAFT_SKIPPED + 1))
+              fi
+              echo -e "issue\t${dedupe_key}\t${recurrence}" >> "$CURRENT_DRAFT_INDEX"
             fi
 
             pr_needed=0
@@ -525,23 +546,36 @@ jobs:
               esac
             fi
             if [ "$pr_needed" -eq 1 ]; then
-              {
-                echo "# [AUTO-DRAFT PR] $category"
-                echo
-                echo "## Intent"
-                echo "- Prepare minimal diff proposal for \`$category\`"
-                echo "- No code was changed automatically"
-                echo
-                echo "## Candidate Files"
-                echo "- \`.github/workflows/ops-autopilot-observe.yml\`"
-                echo "- \`ops/runbook.md\`"
-                echo "- \`docs/iam-reduction-policy.md\`"
-                echo
-                echo "## Acceptance"
-                echo "1. Category count decreases on next run"
-                echo "2. No new FAIL categories introduced"
-                echo "3. Evidence artifact retained"
-              } > "$DRAFT_PRS_DIR/pr_${draft_slug}.md"
+              prev_rec=0
+              if [ -n "${PREV_DRAFT_INDEX:-}" ] && [ -f "$PREV_DRAFT_INDEX" ]; then
+                prev_rec="$(awk -F'\t' -v kind="pr" -v k="$dedupe_key" '$1==kind && $2==k{print $3; exit}' "$PREV_DRAFT_INDEX" 2>/dev/null || echo 0)"
+              fi
+              if ! [[ "$prev_rec" =~ ^[0-9]+$ ]]; then
+                prev_rec=0
+              fi
+              if [ "$recurrence" -gt "$prev_rec" ]; then
+                {
+                  echo "# [AUTO-DRAFT PR] $category"
+                  echo
+                  echo "## Intent"
+                  echo "- Prepare minimal diff proposal for \`$category\`"
+                  echo "- No code was changed automatically"
+                  echo
+                  echo "## Candidate Files"
+                  echo "- \`.github/workflows/ops-autopilot-observe.yml\`"
+                  echo "- \`ops/runbook.md\`"
+                  echo "- \`docs/iam-reduction-policy.md\`"
+                  echo
+                  echo "## Acceptance"
+                  echo "1. Category count decreases on next run"
+                  echo "2. No new FAIL categories introduced"
+                  echo "3. Evidence artifact retained"
+                } > "$DRAFT_PRS_DIR/pr_${draft_slug}.md"
+                PR_DRAFT_NEW=$((PR_DRAFT_NEW + 1))
+              else
+                PR_DRAFT_SKIPPED=$((PR_DRAFT_SKIPPED + 1))
+              fi
+              echo -e "pr\t${dedupe_key}\t${recurrence}" >> "$CURRENT_DRAFT_INDEX"
             fi
           done
 
@@ -562,6 +596,10 @@ jobs:
             echo
             echo "- issue_drafts: $ISSUE_DRAFT_COUNT"
             echo "- pr_drafts: $PR_DRAFT_COUNT"
+            echo "- issue_drafts_new: $ISSUE_DRAFT_NEW"
+            echo "- issue_drafts_skipped: $ISSUE_DRAFT_SKIPPED"
+            echo "- pr_drafts_new: $PR_DRAFT_NEW"
+            echo "- pr_drafts_skipped: $PR_DRAFT_SKIPPED"
             echo
             echo "## Issue Drafts"
             find "$DRAFT_ISSUES_DIR" -maxdepth 1 -type f -name '*.md' -print | sed 's#^#- #' || true
