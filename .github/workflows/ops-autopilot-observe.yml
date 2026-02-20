@@ -947,18 +947,16 @@ jobs:
             fi
             echo
             echo "## Fail Reasons"
-            if [ -s "$FAIL_REASONS" ]; then
-              sed 's/^/- /' "$FAIL_REASONS"
-            else
-              echo "- (none)"
-            fi
+            jq -r '
+              [(.fail_by_category // {} | to_entries[] | select((.value // 0) > 0) | .key)] as $items
+              | if ($items | length) == 0 then "- (none)" else ($items[] | "- " + .) end
+            ' "$OUT/metrics.json"
             echo
             echo "## Warn Reasons"
-            if [ -s "$WARN_REASONS" ]; then
-              sed 's/^/- /' "$WARN_REASONS"
-            else
-              echo "- (none)"
-            fi
+            jq -r '
+              [(.warn_by_category // {} | to_entries[] | select((.value // 0) > 0) | .key)] as $items
+              | if ($items | length) == 0 then "- (none)" else ($items[] | "- " + .) end
+            ' "$OUT/metrics.json"
             echo
             echo "## Counters"
             jq -r '
@@ -1037,6 +1035,10 @@ jobs:
               "- drafts_summary: artifacts/ops-autopilot/<run>/drafts/summary-actions.md"
             ' "$OUT/metrics.json"
             echo
+            echo "## Evidence Files (one-cycle legacy)"
+            echo "- fail-reasons.txt: evidence-only (not used for decision)"
+            echo "- warn-reasons.txt: evidence-only (not used for decision)"
+            echo
             echo "## Next CLI"
             echo "1. gcloud run services describe $SERVICE --project $PROJECT_ID --region $REGION --format='value(spec.template.spec.serviceAccountName)'"
             echo "2. gcloud functions list --project $PROJECT_ID --v2 --regions $REGION --format='table(name,buildConfig.runtime,serviceConfig.serviceAccountEmail)'"
@@ -1048,8 +1050,8 @@ jobs:
             {
               echo "# Ops Autopilot Observe"
               echo
-              echo "- Status: $status"
-              echo "- policy_version: $POLICY_VERSION"
+              echo "- Status: $(jq -r '.status // \"UNKNOWN\"' "$OUT/metrics.json")"
+              echo "- policy_version: $(jq -r '.policy_version // \"unknown\"' "$OUT/metrics.json")"
               echo "- WARN total: $(jq -r '.counts.warn // 0' "$OUT/metrics.json")"
               echo "- ERROR total: $(jq -r '.counts.fail // 0' "$OUT/metrics.json")"
               echo "- issue_drafts_new: $(jq -r '.drafts.issue_drafts_new // 0' "$OUT/metrics.json")"
