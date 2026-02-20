@@ -47,6 +47,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          source ops/lib/metrics-validate.sh
 
           TS="$(date -u +%Y%m%d-%H%M%S)"
           OUT="artifacts/ops-autopilot/${TS}"
@@ -906,20 +907,56 @@ jobs:
             FAIL) next_task_id="BLOCK-TRIAGE" ;;
           esac
 
+          decision="$status"
+          decision_reason_code="policy_pass"
+          case "$status" in
+            OK) decision="CLOSE"; decision_reason_code="policy_pass" ;;
+            WARN) decision="KEEP"; decision_reason_code="warn_category_present" ;;
+            FAIL) decision="BLOCK"; decision_reason_code="fail_category_present" ;;
+          esac
+          policy_eval_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
           jq --arg status "$status" \
              --arg next_task_id "$next_task_id" \
+             --arg decision "$decision" \
+             --arg decision_reason_code "$decision_reason_code" \
+             --arg decision_source "autopilot-loop" \
+             --arg policy_eval_at "$policy_eval_at" \
              --argjson warn_total "$WARN_TOTAL" \
              --argjson error_total "$ERROR_TOTAL" \
              --argjson error_policy_guardrail "$ERROR_POLICY_GUARDRAIL_COUNT" \
              --argjson error_automation "$ERROR_AUTOMATION_COUNT" '
             .status = $status
             | .next_task_id = $next_task_id
+            | .decision = $decision
+            | .decision_reason_code = $decision_reason_code
+            | .decision_source = $decision_source
+            | .policy_eval_at = $policy_eval_at
             | .counts.warn = $warn_total
             | .counts.fail = $error_total
             | .fail_by_category.ERROR_POLICY_GUARDRAIL = $error_policy_guardrail
             | .fail_by_category.ERROR_AUTOMATION = $error_automation
           ' "$OUT/metrics.json" > "$OUT/metrics.tmp.json"
           mv "$OUT/metrics.tmp.json" "$OUT/metrics.json"
+
+          if ! validate_metrics_json "$OUT/metrics.json"; then
+            fail=1
+            status="FAIL"
+            decision="BLOCK"
+            decision_reason_code="metrics_decision_invalid"
+            next_task_id="BLOCK-TRIAGE"
+            jq --arg status "$status" \
+               --arg next_task_id "$next_task_id" \
+               --arg decision "$decision" \
+               --arg decision_reason_code "$decision_reason_code" '
+              .status = $status
+              | .next_task_id = $next_task_id
+              | .decision = $decision
+              | .decision_reason_code = $decision_reason_code
+              | .fail_by_category.ERROR_RUNTIME_OR_OBSERVE = 1
+            ' "$OUT/metrics.json" > "$OUT/metrics.tmp.json"
+            mv "$OUT/metrics.tmp.json" "$OUT/metrics.json"
+          fi
 
           echo "$status" > "$OUT/status.txt"
 

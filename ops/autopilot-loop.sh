@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/lib/metrics-validate.sh"
+
 BRANCH="${1:-main-v2}"
 WORKFLOW_FILE="${2:-ops-autopilot-observe.yml}"
 OUT_ROOT="${3:-artifacts/ops-observe}"
@@ -318,6 +321,11 @@ fi
 
 if ! annotate_metrics_decision "$decision" "$reason"; then
   emit_result "BLOCK" "metrics_write_failed" "$next_task"
+  exit 2
+fi
+
+if ! validate_metrics_json "$metrics_path"; then
+  emit_result "BLOCK" "metrics_decision_invalid" "$next_task"
   exit 2
 fi
 

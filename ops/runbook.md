@@ -302,6 +302,10 @@
   - missing/invalid decision fields => `BLOCK (metrics_decision_invalid)`
 - S-25-14 observe downstream rule:
   - summary/notify/draft branches must read `metrics.json` only
+- S-25-16 shared metrics validator:
+  - `ops/lib/metrics-validate.sh` is the single validator for loop/workflow
+  - validation failure reason is fixed to `metrics_decision_invalid`
+  - invalid metrics must fail-closed (`BLOCK`)
 
 ## S-21 Runtime Track
 
