@@ -7,6 +7,10 @@ OUT_ROOT="${3:-artifacts/ops-observe}"
 POLL_SECONDS="${POLL_SECONDS:-5}"
 GH_RETRY_MAX="${GH_RETRY_MAX:-3}"
 ACTIONS_ADAPTER="${ACTIONS_ADAPTER:-ops/mcp/gh-actions-adapter.sh}"
+run_id="unknown"
+out_dir=""
+metrics_path="none"
+summary_path="none"
 
 retry_gh() {
   local max="${1:-3}"
@@ -27,21 +31,71 @@ retry_gh() {
   done
 }
 
+emit_result() {
+  local decision="${1:-BLOCK}"
+  local reason="${2:-none}"
+  local next_task="${3:-KEEP-MANUAL}"
+
+  if [[ "$decision" == "BLOCK" ]]; then
+    local draft_root
+    if [[ -n "${out_dir:-}" ]]; then
+      draft_root="$out_dir/drafts/block"
+    else
+      draft_root="$OUT_ROOT/block"
+    fi
+    mkdir -p "$draft_root"
+
+    local artifact_flag="no"
+    if [[ -n "${out_dir:-}" && -d "$out_dir" ]]; then
+      artifact_flag="yes"
+    fi
+
+    local ts reason_slug draft_file
+    ts="$(date -u +%Y%m%d-%H%M%S)"
+    reason_slug="$(printf '%s' "$reason" | tr -c 'a-zA-Z0-9_-' '_')"
+    draft_file="$draft_root/block-${ts}-${reason_slug}.md"
+
+    {
+      echo "# [AUTO-BLOCK] $reason"
+      echo
+      echo "- reason: $reason"
+      echo "- run_id: ${run_id:-unknown}"
+      echo "- workflow: $WORKFLOW_FILE"
+      echo "- branch: $BRANCH"
+      echo "- artifact_present: $artifact_flag"
+      echo "- artifact_dir: ${out_dir:-none}"
+      echo "- metrics: ${metrics_path:-none}"
+      echo "- summary: ${summary_path:-none}"
+      echo
+      echo "## Retry Command"
+      echo "\`GH_RETRY_MAX=${GH_RETRY_MAX} ACTIONS_ADAPTER=${ACTIONS_ADAPTER} sh ops/autopilot-loop.sh ${BRANCH} ${WORKFLOW_FILE}\`"
+      echo
+      echo "## Policy"
+      echo "- BLOCK requires human approval before dangerous actions."
+      echo "- No production mutation is performed by this script."
+    } > "$draft_file"
+  fi
+
+  echo "$decision | run=${run_id:-unknown} | reason=$reason | metrics=${metrics_path:-none} | summary=${summary_path:-none} | next=$next_task"
+  if [[ -n "${run_id:-}" && "$run_id" != "unknown" ]]; then
+    retry_gh "$GH_RETRY_MAX" "$ACTIONS_ADAPTER" url "$run_id" | sed 's#^#[URL] #' || true
+  fi
+}
+
 mkdir -p "$OUT_ROOT"
 
 if [[ ! -x "$ACTIONS_ADAPTER" ]]; then
-  echo "BLOCK | run=unknown | reason=mcp_unavailable"
+  emit_result "BLOCK" "mcp_unavailable" "BLOCK-TRIAGE"
   exit 2
 fi
 
 echo "[RUN] workflow dispatch: $WORKFLOW_FILE ($BRANCH)"
 if ! retry_gh "$GH_RETRY_MAX" "$ACTIONS_ADAPTER" dispatch "$WORKFLOW_FILE" "$BRANCH"; then
-  echo "BLOCK | run=unknown | reason=dispatch_failed"
+  emit_result "BLOCK" "dispatch_failed" "BLOCK-TRIAGE"
   exit 2
 fi
 
 echo "[WAIT] resolve latest workflow_dispatch run id"
-run_id=""
 for _ in $(seq 1 30); do
   run_id="$(retry_gh "$GH_RETRY_MAX" "$ACTIONS_ADAPTER" latest_run_id "$WORKFLOW_FILE" "$BRANCH" 2>/dev/null || true)"
   if [[ -n "$run_id" && "$run_id" != "null" ]]; then
@@ -51,28 +105,33 @@ for _ in $(seq 1 30); do
 done
 
 if [[ -z "$run_id" || "$run_id" == "null" ]]; then
-  echo "BLOCK | run=unknown | reason=run_id_lookup_failed"
+  run_id="unknown"
+  emit_result "BLOCK" "run_id_lookup_failed" "BLOCK-TRIAGE"
   exit 2
 fi
 
 echo "[INFO] run=$run_id"
 if ! retry_gh "$GH_RETRY_MAX" "$ACTIONS_ADAPTER" watch "$run_id" "$POLL_SECONDS"; then
-  echo "BLOCK | run=$run_id | reason=watch_failed"
+  emit_result "BLOCK" "watch_failed" "BLOCK-TRIAGE"
   exit 2
 fi
 
 out_dir="$OUT_ROOT/$run_id"
 mkdir -p "$out_dir"
 if ! retry_gh "$GH_RETRY_MAX" "$ACTIONS_ADAPTER" download_artifacts "$run_id" "$out_dir"; then
-  echo "BLOCK | run=$run_id | reason=artifact_missing"
+  emit_result "BLOCK" "artifact_missing" "BLOCK-TRIAGE"
   exit 2
 fi
 
 metrics_path="$(find "$out_dir" -type f -name 'metrics.json' | head -n1 || true)"
 summary_path="$(find "$out_dir" -type f -name 'summary.md' | head -n1 || true)"
+if [[ -z "${summary_path:-}" ]]; then
+  summary_path="none"
+fi
 
 if [[ -z "$metrics_path" ]]; then
-  echo "BLOCK | run=$run_id | reason=metrics_missing"
+  metrics_path="none"
+  emit_result "BLOCK" "metrics_missing" "BLOCK-TRIAGE"
   exit 2
 fi
 
@@ -92,5 +151,9 @@ case "$status" in
     ;;
 esac
 
-echo "$decision | run=$run_id | metrics=$metrics_path | summary=${summary_path:-none} | next=$next_task"
-retry_gh "$GH_RETRY_MAX" "$ACTIONS_ADAPTER" url "$run_id" | sed 's#^#[URL] #' || true
+if [[ "$decision" == "BLOCK" ]]; then
+  emit_result "$decision" "status_fail" "$next_task"
+  exit 2
+fi
+
+emit_result "$decision" "none" "$next_task"

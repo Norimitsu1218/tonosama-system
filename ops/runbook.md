@@ -258,6 +258,8 @@
 `CLOSE|KEEP|BLOCK | run=<id> | metrics=<path> | next=<TASK_ID>`
 - `BLOCK` requires immediate triage using evidence in:
 `artifacts/ops-observe/<RUN_ID>/`
+- On `BLOCK`, a draft notification is auto-generated:
+`artifacts/ops-observe/block/block-<timestamp>-<reason>.md`
 
 ## S-21 Runtime Track
 
