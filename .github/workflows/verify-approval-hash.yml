@@ -95,7 +95,7 @@ jobs:
 
           # Convert WIF credential file to ADC entry that firebase-admin can consume.
           if [ -n "${GOOGLE_GHA_CREDS_PATH:-}" ] && [ -f "${GOOGLE_GHA_CREDS_PATH}" ]; then
-            gcloud auth application-default login --cred-file="${GOOGLE_GHA_CREDS_PATH}" --quiet
+            gcloud auth login --cred-file="${GOOGLE_GHA_CREDS_PATH}" --update-adc --brief --quiet
             unset GOOGLE_APPLICATION_CREDENTIALS
             unset CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE
           fi
