@@ -1,8 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BACKEND="${GH_ACTIONS_BACKEND:-gh}"
+
 cmd="${1:-}"
 shift || true
+
+if [[ "$BACKEND" == "mcp" ]]; then
+  exec "$SCRIPT_DIR/gh-actions-adapter-mcp.sh" "$cmd" "$@"
+fi
 
 case "$cmd" in
   dispatch)

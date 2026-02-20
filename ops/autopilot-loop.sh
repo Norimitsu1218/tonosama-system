@@ -7,6 +7,8 @@ OUT_ROOT="${3:-artifacts/ops-observe}"
 POLL_SECONDS="${POLL_SECONDS:-5}"
 GH_RETRY_MAX="${GH_RETRY_MAX:-3}"
 ACTIONS_ADAPTER="${ACTIONS_ADAPTER:-ops/mcp/gh-actions-adapter.sh}"
+GH_ACTIONS_BACKEND="${GH_ACTIONS_BACKEND:-gh}"
+BLOCK_DEDUPE_WINDOW_SEC="${BLOCK_DEDUPE_WINDOW_SEC:-900}"
 run_id="unknown"
 out_dir=""
 metrics_path="none"
@@ -50,25 +52,42 @@ emit_result() {
       artifact_flag="yes"
     fi
 
-    local ts reason_slug draft_file
+    local ts key_slug draft_file
     ts="$(date -u +%Y%m%d-%H%M%S)"
-    reason_slug="$(printf '%s' "$reason" | tr -c 'a-zA-Z0-9_-' '_')"
-    draft_file="$draft_root/block-${ts}-${reason_slug}.md"
+    key_slug="$(printf '%s' "${WORKFLOW_FILE}|${BRANCH}|${reason}" | tr -c 'a-zA-Z0-9_-' '_')"
+    draft_file="$draft_root/block-${key_slug}.md"
+
+    if [[ -f "$draft_file" ]]; then
+      local now_epoch old_epoch
+      now_epoch="$(date +%s)"
+      old_epoch="$(stat -f %m "$draft_file" 2>/dev/null || stat -c %Y "$draft_file" 2>/dev/null || echo 0)"
+      if (( now_epoch - old_epoch < BLOCK_DEDUPE_WINDOW_SEC )); then
+        echo "$decision | run=${run_id:-unknown} | reason=$reason | metrics=${metrics_path:-none} | summary=${summary_path:-none} | next=$next_task"
+        if [[ -n "${run_id:-}" && "$run_id" != "unknown" ]]; then
+          retry_gh "$GH_RETRY_MAX" "$ACTIONS_ADAPTER" url "$run_id" | sed 's#^#[URL] #' || true
+        fi
+        echo "[INFO] block draft deduped: $draft_file" >&2
+        return 0
+      fi
+    fi
 
     {
       echo "# [AUTO-BLOCK] $reason"
       echo
+      echo "- dedupe_key: ${WORKFLOW_FILE}|${BRANCH}|${reason}"
+      echo "- generated_at_utc: $ts"
       echo "- reason: $reason"
       echo "- run_id: ${run_id:-unknown}"
       echo "- workflow: $WORKFLOW_FILE"
       echo "- branch: $BRANCH"
+      echo "- backend: $GH_ACTIONS_BACKEND"
       echo "- artifact_present: $artifact_flag"
       echo "- artifact_dir: ${out_dir:-none}"
       echo "- metrics: ${metrics_path:-none}"
       echo "- summary: ${summary_path:-none}"
       echo
       echo "## Retry Command"
-      echo "\`GH_RETRY_MAX=${GH_RETRY_MAX} ACTIONS_ADAPTER=${ACTIONS_ADAPTER} sh ops/autopilot-loop.sh ${BRANCH} ${WORKFLOW_FILE}\`"
+      echo "\`GH_RETRY_MAX=${GH_RETRY_MAX} GH_ACTIONS_BACKEND=${GH_ACTIONS_BACKEND} ACTIONS_ADAPTER=${ACTIONS_ADAPTER} sh ops/autopilot-loop.sh ${BRANCH} ${WORKFLOW_FILE}\`"
       echo
       echo "## Policy"
       echo "- BLOCK requires human approval before dangerous actions."

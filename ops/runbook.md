@@ -254,12 +254,18 @@
 `sh ops/autopilot-loop.sh main-v2`
 - Adapter is swappable for MCP bridge:
 `ACTIONS_ADAPTER=ops/mcp/gh-actions-adapter.sh sh ops/autopilot-loop.sh main-v2`
+- Backend selection:
+`GH_ACTIONS_BACKEND=gh|mcp`
+- MCP backend contract:
+`MCP_GH_ACTIONS_CMD=<executable_bridge> GH_ACTIONS_BACKEND=mcp sh ops/autopilot-loop.sh main-v2`
 - Output contract:
 `CLOSE|KEEP|BLOCK | run=<id> | metrics=<path> | next=<TASK_ID>`
 - `BLOCK` requires immediate triage using evidence in:
 `artifacts/ops-observe/<RUN_ID>/`
 - On `BLOCK`, a draft notification is auto-generated:
-`artifacts/ops-observe/block/block-<timestamp>-<reason>.md`
+`artifacts/ops-observe/block/block-<workflow|branch|reason>.md`
+- Duplicate block drafts are suppressed within:
+`BLOCK_DEDUPE_WINDOW_SEC` (default `900`)
 
 ## S-21 Runtime Track
 
