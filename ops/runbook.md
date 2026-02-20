@@ -239,11 +239,23 @@
 - Use one task per cycle (single concern, single commit).
 - Use fixed verification bundle:
 `sh ops/quick-check.sh main-v2`
+- Use one-command orchestration for observe loop:
+`sh ops/autopilot-loop.sh main-v2`
 - Ask for confirmation only when operation is destructive:
   - deletion with production impact
   - human user permission revocation
   - billing/public exposure change
   - rollback-impossible change
+
+## S-25 Zero-Copy Loop
+
+- Human role is policy and approval boundary only.
+- Standard loop command:
+`sh ops/autopilot-loop.sh main-v2`
+- Output contract:
+`CLOSE|KEEP|BLOCK | run=<id> | metrics=<path> | next=<TASK_ID>`
+- `BLOCK` requires immediate triage using evidence in:
+`artifacts/ops-observe/<RUN_ID>/`
 
 ## S-21 Runtime Track
 
