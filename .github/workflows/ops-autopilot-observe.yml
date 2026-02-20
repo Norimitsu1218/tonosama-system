@@ -360,6 +360,103 @@ jobs:
             jq -n '{diff_skipped:true, reason:"previous_run_not_found"}' > "$OUT/metrics-diff.json"
           fi
 
+          cat > "$OUT/warn-allowlist.txt" <<'EOF'
+          WARN_TTL
+          WARN_EDITOR_OWNER
+          WARN_OPTIONAL_SECRET_EXTRA
+          EOF
+          sort -u "$OUT/warn-allowlist.txt" -o "$OUT/warn-allowlist.txt"
+          grep -Fxv -f "$OUT/warn-allowlist.txt" "$WARN_CATEGORIES" > "$OUT/non-allowlisted-warns.txt" || true
+          if [ -s "$OUT/non-allowlisted-warns.txt" ]; then
+            fail=1
+            echo "policy_warn_not_allowlisted" >> "$FAIL_REASONS"
+          fi
+
+          PREV3_RUN_IDS="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ops-autopilot-observe.yml/runs?per_page=30" \
+            | jq -r --arg cur "${GITHUB_RUN_ID}" '.workflow_runs[] | select((.id|tostring) != $cur and .status == "completed") | .id' \
+            | head -n3)"
+
+          : > "$OUT/warn-recurrence.tsv"
+          POLICY_BLOCK_COUNT=0
+          while IFS= read -r category; do
+            [ -z "$category" ] && continue
+            rec_count=1
+            for rid in $PREV3_RUN_IDS; do
+              rdir="$OUT/recurrence/$rid"
+              if [ ! -d "$rdir" ]; then
+                mkdir -p "$rdir"
+                gh run download "$rid" --name "ops-autopilot-observe-${rid}" -D "$rdir" >/dev/null 2>&1 || true
+              fi
+              prev_metrics="$(find "$rdir" -name metrics.json -type f | head -n1 || true)"
+              if [ -n "$prev_metrics" ] && [ -f "$prev_metrics" ] && jq -e --arg c "$category" '((.warn_by_category[$c] // 0) > 0)' "$prev_metrics" >/dev/null 2>&1; then
+                rec_count=$((rec_count + 1))
+              else
+                break
+              fi
+            done
+            echo -e "${category}\t${rec_count}" >> "$OUT/warn-recurrence.tsv"
+
+            due_hint="$(jq -r --arg c "$category" '.actions[]? | select(.category==$c) | .due_hint // ""' "$OUT/metrics.json" | head -n1)"
+            threshold=99
+            case "$due_hint" in
+              immediate|same_day) threshold=2 ;;
+              before_next_rotation) threshold=3 ;;
+              next_iam_cycle) threshold=4 ;;
+            esac
+            if [ "$threshold" -lt 99 ] && [ "$rec_count" -ge "$threshold" ]; then
+              fail=1
+              POLICY_BLOCK_COUNT=$((POLICY_BLOCK_COUNT + 1))
+              echo "warn_due_exceeded_${category}" >> "$FAIL_REASONS"
+            fi
+          done < "$WARN_CATEGORIES"
+
+          jq -Rn '
+            [inputs | split("\t") | {key: .[0], value: (.[1]|tonumber)}] | from_entries
+          ' < "$OUT/warn-recurrence.tsv" > "$OUT/warn-recurrence.json"
+
+          jq --slurpfile rec "$OUT/warn-recurrence.json" '
+            def escalate($p):
+              if $p == "P3" then "P2"
+              elif $p == "P2" then "P1"
+              elif $p == "P1" then "P0"
+              else $p end;
+            .actions = (.actions // [] | map(
+              . + { recurrence_count: ($rec[0][.category] // 0) }
+              | . + {
+                  effective_priority:
+                    (if (.recurrence_count // 0) >= 3 and (.priority | startswith("P")) then escalate(.priority) else .priority end)
+                }
+            ))
+          ' "$OUT/metrics.json" > "$OUT/metrics.tmp.json"
+          mv "$OUT/metrics.tmp.json" "$OUT/metrics.json"
+
+          if [ "$POLICY_BLOCK_COUNT" -gt 0 ] || [ -s "$OUT/non-allowlisted-warns.txt" ]; then
+            echo "ERROR_POLICY_GUARDRAIL" >> "$FAIL_CATEGORIES"
+          fi
+          sort -u "$FAIL_CATEGORIES" -o "$FAIL_CATEGORIES"
+
+          WARN_TOTAL="$(wc -l < "$WARN_CATEGORIES" | tr -d ' ')"
+          ERROR_TOTAL="$(wc -l < "$FAIL_CATEGORIES" | tr -d ' ')"
+          ERROR_POLICY_GUARDRAIL_COUNT="$(grep -c '^ERROR_POLICY_GUARDRAIL$' "$FAIL_CATEGORIES" || true)"
+
+          status="OK"
+          if [ "$fail" -eq 1 ]; then
+            status="FAIL"
+          elif [ "$warn" -eq 1 ]; then
+            status="WARN"
+          fi
+
+          jq --arg status "$status" \
+             --argjson warn_total "$WARN_TOTAL" \
+             --argjson error_total "$ERROR_TOTAL" \
+             --argjson error_policy_guardrail "$ERROR_POLICY_GUARDRAIL_COUNT" '
+            .status = $status
+            | .counts.warn = $warn_total
+            | .counts.fail = $error_total
+            | .fail_by_category.ERROR_POLICY_GUARDRAIL = $error_policy_guardrail
+          ' "$OUT/metrics.json" > "$OUT/metrics.tmp.json"
+          mv "$OUT/metrics.tmp.json" "$OUT/metrics.json"
+
           echo "$status" > "$OUT/status.txt"
 
           {
@@ -412,6 +509,7 @@ jobs:
               "- WARN_UNKNOWN: \(.warn_by_category.WARN_UNKNOWN // 0)\n" +
               "- ERROR_RUNTIME_OR_OBSERVE: \(.fail_by_category.ERROR_RUNTIME_OR_OBSERVE // 0)\n" +
               "- ERROR_SECRET_REQUIRED_MISSING: \(.fail_by_category.ERROR_SECRET_REQUIRED_MISSING // 0)\n" +
+              "- ERROR_POLICY_GUARDRAIL: \(.fail_by_category.ERROR_POLICY_GUARDRAIL // 0)\n" +
               "- ERROR_UNKNOWN: \(.fail_by_category.ERROR_UNKNOWN // 0)"
             ' "$OUT/metrics.json"
             echo
@@ -427,6 +525,7 @@ jobs:
               "METRIC WARN_UNKNOWN=\(.warn_by_category.WARN_UNKNOWN // 0)\n" +
               "METRIC ERROR_RUNTIME_OR_OBSERVE=\(.fail_by_category.ERROR_RUNTIME_OR_OBSERVE // 0)\n" +
               "METRIC ERROR_SECRET_REQUIRED_MISSING=\(.fail_by_category.ERROR_SECRET_REQUIRED_MISSING // 0)\n" +
+              "METRIC ERROR_POLICY_GUARDRAIL=\(.fail_by_category.ERROR_POLICY_GUARDRAIL // 0)\n" +
               "METRIC ERROR_UNKNOWN=\(.fail_by_category.ERROR_UNKNOWN // 0)"
             ' "$OUT/metrics.json"
             echo
@@ -435,7 +534,7 @@ jobs:
               if (.actions | length) == 0 then
                 "- (none)"
               else
-                .actions[] | "- [\(.priority)] \(.category): \(.action_class) (owner=\(.owner), due=\(.due_hint // "none"))"
+                .actions[] | "- [\(.effective_priority // .priority)] \(.category): \(.action_class) (owner=\(.owner), due=\(.due_hint // "none"), recurrence=\(.recurrence_count // 0))"
               end
             ' "$OUT/metrics.json"
             echo
