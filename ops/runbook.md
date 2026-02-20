@@ -297,6 +297,9 @@
   - `decision_source` (`autopilot-loop`)
   - `policy_eval_at` (UTC ISO8601)
   - write path uses `tmp -> mv` and any write failure => `BLOCK (metrics_write_failed)`
+- S-25-13 downstream rule:
+  - loop output must read decision/reason from `metrics.json` (no summary-based decision path)
+  - missing/invalid decision fields => `BLOCK (metrics_decision_invalid)`
 
 ## S-21 Runtime Track
 

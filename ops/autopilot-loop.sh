@@ -15,6 +15,8 @@ metrics_path="none"
 summary_path="none"
 policy_rules_path="none"
 policy_version="unknown"
+metrics_decision="unknown"
+metrics_reason_code="none"
 
 annotate_metrics_decision() {
   local decision_code="${1:?decision required}"
@@ -61,16 +63,39 @@ annotate_metrics_decision() {
 block_with_metrics() {
   local reason_code="${1:?reason required}"
   local next_task="${2:-KEEP-MANUAL}"
+  local emit_reason="$reason_code"
 
   if [[ "${metrics_path:-none}" != "none" && -f "${metrics_path:-}" ]]; then
     if ! annotate_metrics_decision "BLOCK" "$reason_code"; then
       emit_result "BLOCK" "metrics_write_failed" "$next_task"
       exit 2
     fi
+    if load_metrics_decision "$metrics_path"; then
+      emit_reason="$metrics_reason_code"
+    fi
   fi
 
-  emit_result "BLOCK" "$reason_code" "$next_task"
+  emit_result "BLOCK" "$emit_reason" "$next_task"
   exit 2
+}
+
+load_metrics_decision() {
+  local m="$1"
+  local d r
+  d="$(jq -r '.decision // empty' "$m" 2>/dev/null || true)"
+  r="$(jq -r '.decision_reason_code // empty' "$m" 2>/dev/null || true)"
+
+  if [[ -z "$d" || -z "$r" ]]; then
+    return 1
+  fi
+  case "$d" in
+    CLOSE|KEEP|BLOCK) ;;
+    *) return 1 ;;
+  esac
+
+  metrics_decision="$d"
+  metrics_reason_code="$r"
+  return 0
 }
 
 retry_gh() {
@@ -296,4 +321,9 @@ if ! annotate_metrics_decision "$decision" "$reason"; then
   exit 2
 fi
 
-emit_result "$decision" "$reason" "$next_task"
+if ! load_metrics_decision "$metrics_path"; then
+  emit_result "BLOCK" "metrics_decision_invalid" "$next_task"
+  exit 2
+fi
+
+emit_result "$metrics_decision" "$metrics_reason_code" "$next_task"
