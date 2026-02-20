@@ -1,5 +1,5 @@
-import { applicationDefault, getApps, initializeApp } from "firebase-admin/app";
-import { verifyStoreApprovalHashChain } from "./auditHash";
+import { Firestore } from "@google-cloud/firestore";
+import { computeApprovalHash, type ApprovalAction, type ApprovalChainPayload } from "./auditHashCore";
 
 function readStoreId(): string {
   const arg = process.argv.slice(2).find((value) => value.startsWith("--storeId="));
@@ -13,18 +13,40 @@ function readStoreId(): string {
   throw new Error("missing_store_id");
 }
 
-function ensureAdminApp(): void {
-  if (getApps().length > 0) {
-    return;
+async function verifyStoreApprovalHashChainWithFirestore(storeId: string): Promise<boolean> {
+  const db = new Firestore();
+  const snapshot = await db
+    .collection("approval_log")
+    .where("storeId", "==", storeId)
+    .orderBy("createdAtMs", "asc")
+    .get();
+
+  let prevHash = "GENESIS";
+  for (const row of snapshot.docs) {
+    const payload: ApprovalChainPayload = {
+      actor: "owner",
+      action: row.get("action") as ApprovalAction,
+      storeId: String(row.get("storeId")),
+      itemId: (row.get("itemId") as string | null) ?? null,
+      reason: (row.get("reason") as string | null) ?? null,
+      sourceHash: (row.get("sourceHash") as string | null) ?? null,
+      intent: String(row.get("intent")),
+      allowed_use: String(row.get("allowed_use")),
+      createdAtMs: Number(row.get("createdAtMs")),
+    };
+
+    const expected = computeApprovalHash(prevHash, payload);
+    if (row.get("prevHash") !== prevHash || row.get("hash") !== expected) {
+      return false;
+    }
+    prevHash = expected;
   }
-  initializeApp({ credential: applicationDefault() });
+  return true;
 }
 
 async function main() {
   const storeId = readStoreId();
-  ensureAdminApp();
-
-  const ok = await verifyStoreApprovalHashChain(storeId);
+  const ok = await verifyStoreApprovalHashChainWithFirestore(storeId);
   if (!ok) {
     process.stderr.write(`approval hash chain verification failed for storeId=${storeId}\n`);
     process.exit(1);
